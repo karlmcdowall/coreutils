@@ -32,6 +32,7 @@ unicode-width = { workspace = true }
 uucore = { workspace = true, features = ["fs", "version-cmp"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+signal-hook = { workspace = true }
 nix = { workspace = true }
 
 [[bin]]

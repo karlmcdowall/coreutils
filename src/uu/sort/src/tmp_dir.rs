@@ -15,6 +15,8 @@ use uucore::{
 };
 
 use crate::SortError;
+use signal_hook::iterator::Handle;
+
 
 /// A wrapper around TempDir that may only exist once in a process.
 ///
@@ -63,6 +65,7 @@ impl TmpDirWrapper {
             std::process::exit(2)
         })
         .map_err(|e| USimpleError::new(2, format!("failed to set up signal handler: {e}")))
+//        Ok(())
     }
 
     pub fn next_file(&mut self) -> UResult<(File, PathBuf)> {

@@ -3205,6 +3205,7 @@ dependencies = [
  "rand",
  "rayon",
  "self_cell",
+ "signal-hook",
  "tempfile",
  "unicode-width 0.2.0",
  "uucore",
