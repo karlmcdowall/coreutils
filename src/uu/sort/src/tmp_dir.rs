@@ -2,6 +2,7 @@
 //
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
+
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -15,7 +16,54 @@ use uucore::{
 };
 
 use crate::SortError;
+
+#[cfg(target_os = "linux")]
 use signal_hook::iterator::Handle;
+#[cfg(target_os = "linux")]
+use std::thread::JoinHandle;
+
+/// signal handler listens for SIGUSR1 signal and runs provided closure.
+#[cfg(target_os = "linux")]
+pub(crate) struct SignalHandler {
+    handle: Handle,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+impl SignalHandler {
+    pub(crate) fn install_signal_handler(
+        f: Box<dyn Send + Sync + Fn()>,
+    ) -> Result<Self, std::io::Error> {
+        use signal_hook::consts::signal::*;
+        use signal_hook::iterator::Signals;
+
+        let mut signals = Signals::new([SIGINT])?;
+        let handle = signals.handle();
+        let thread = std::thread::spawn(move || {
+            for signal in &mut signals {
+                match signal {
+                    SIGINT => (*f)(),
+                    _ => unreachable!(),
+                }
+            }
+        });
+
+        Ok(Self {
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for SignalHandler {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = std::mem::take(&mut self.thread) {
+            thread.join().unwrap();
+        }
+    }
+}
 
 
 /// A wrapper around TempDir that may only exist once in a process.
@@ -29,6 +77,7 @@ pub struct TmpDirWrapper {
     parent_path: PathBuf,
     size: usize,
     lock: Arc<Mutex<()>>,
+    signal_handler: Option<SignalHandler>,
 }
 
 impl TmpDirWrapper {
@@ -38,7 +87,22 @@ impl TmpDirWrapper {
             size: 0,
             temp_dir: None,
             lock: Arc::default(),
+            signal_handler: None,
         }
+    }
+
+    fn manual_trigger_fn(&self) -> Box<dyn Send + Sync + Fn()> {
+        let path = self.temp_dir.as_ref().unwrap().path().to_owned();
+        let lock = self.lock.clone();
+        Box::new(move || {
+            // Take the lock so that `next_file_path` returns no new file path,
+            // and the program doesn't terminate before the handler has finished
+            let _lock = lock.lock().unwrap();
+            if let Err(e) = remove_tmp_dir(&path) {
+                show_error!("failed to delete temporary directory: {}", e);
+            }
+            std::process::exit(2)
+        })
     }
 
     fn init_tmp_dir(&mut self) -> UResult<()> {
@@ -53,19 +117,18 @@ impl TmpDirWrapper {
                 })?,
         );
 
-        let path = self.temp_dir.as_ref().unwrap().path().to_owned();
-        let lock = self.lock.clone();
-        ctrlc::set_handler(move || {
-            // Take the lock so that `next_file_path` returns no new file path,
-            // and the program doesn't terminate before the handler has finished
-            let _lock = lock.lock().unwrap();
-            if let Err(e) = remove_tmp_dir(&path) {
-                show_error!("failed to delete temporary directory: {}", e);
-            }
-            std::process::exit(2)
-        })
-        .map_err(|e| USimpleError::new(2, format!("failed to set up signal handler: {e}")))
-//        Ok(())
+        self.signal_handler = Some(SignalHandler::install_signal_handler(self.manual_trigger_fn()).unwrap());
+        // ctrlc::set_handler(move || {
+        //     // Take the lock so that `next_file_path` returns no new file path,
+        //     // and the program doesn't terminate before the handler has finished
+        //     let _lock = lock.lock().unwrap();
+        //     if let Err(e) = remove_tmp_dir(&path) {
+        //         show_error!("failed to delete temporary directory: {}", e);
+        //     }
+        //     std::process::exit(2)
+        // })
+        // .map_err(|e| USimpleError::new(2, format!("failed to set up signal handler: {e}")))
+        Ok(())
     }
 
     pub fn next_file(&mut self) -> UResult<(File, PathBuf)> {
