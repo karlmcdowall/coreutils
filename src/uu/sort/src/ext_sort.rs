@@ -51,7 +51,7 @@ pub fn ext_sort(
         move || sorter(&recycled_receiver, &sorted_sender, &settings)
     });
     if settings.compress_prog.is_some() {
-        reader_writer::<_, WriteableCompressedTmpFile>(
+        reader_writer::<WriteableCompressedTmpFile>(
             files,
             settings,
             &sorted_receiver,
@@ -60,7 +60,7 @@ pub fn ext_sort(
             tmp_dir,
         )
     } else {
-        reader_writer::<_, WriteablePlainTmpFile>(
+        reader_writer::<WriteablePlainTmpFile>(
             files,
             settings,
             &sorted_receiver,
@@ -71,11 +71,8 @@ pub fn ext_sort(
     }
 }
 
-fn reader_writer<
-    F: Iterator<Item = UResult<Box<dyn Read + Send>>>,
-    Tmp: WriteableTmpFile + 'static,
->(
-    files: F,
+fn reader_writer<Tmp: WriteableTmpFile + 'static>(
+    files: impl Iterator<Item = UResult<Box<dyn Read + Send>>>,
     settings: &GlobalSettings,
     receiver: &Receiver<Chunk>,
     sender: SyncSender<Chunk>,
@@ -98,7 +95,7 @@ fn reader_writer<
     )?;
     match read_result {
         ReadResult::WroteChunksToFile { tmp_files } => {
-            merge::merge_with_file_limit::<_, _, Tmp>(
+            merge::merge_with_file_limit::<Tmp>(
                 tmp_files.into_iter().map(|c| c.reopen()),
                 settings,
                 output,
