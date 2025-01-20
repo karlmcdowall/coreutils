@@ -591,11 +591,10 @@ pub trait WriteableTmpFile: Sized {
 }
 
 /// A temporary file that is (temporarily) closed, but can be reopened.
-pub trait ClosedTmpFile: Sized {
+pub trait ClosedTmpFile {
     type Reopened: MergeInput;
     /// Reopens the temporary file.
     fn reopen(self) -> UResult<Self::Reopened>;
-    fn try_reopen(self) -> Result<Self::Reopened, (std::io::Error, Self)>;
 }
 
 /// A pre-sorted input for merging.
@@ -643,16 +642,6 @@ impl ClosedTmpFile for ClosedPlainTmpFile {
     fn reopen(self) -> UResult<Self::Reopened> {
         Ok(PlainTmpMergeInput {
             file: File::open(&self.path).map_err(|error| SortError::OpenTmpFileFailed { error })?,
-            path: self.path,
-        })
-    }
-    fn try_reopen(self) -> Result<Self::Reopened, (std::io::Error, Self)> {
-        let file = File::open(&self.path);
-        if let Err(err) = file {
-            return Err((err, self));
-        }
-        Ok(PlainTmpMergeInput {
-            file: file.unwrap(),
             path: self.path,
         })
     }
@@ -737,24 +726,6 @@ impl ClosedTmpFile for ClosedCompressedTmpFile {
             .map_err(|err| SortError::CompressProgExecutionFailed {
                 code: err.raw_os_error().unwrap(),
             })?;
-        let child_stdout = child.stdout.take().unwrap();
-        Ok(CompressedTmpMergeInput {
-            path: self.path,
-            compress_prog: self.compress_prog,
-            child,
-            child_stdout,
-        })
-    }
-
-    fn try_reopen(self) -> Result<Self::Reopened, (std::io::Error, Self)> {
-        let mut command = Command::new(&self.compress_prog);
-        let file = File::open(&self.path).unwrap();
-        command.stdin(file).stdout(Stdio::piped()).arg("-d");
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => return Err((err, self)),
-        };
-
         let child_stdout = child.stdout.take().unwrap();
         Ok(CompressedTmpMergeInput {
             path: self.path,
