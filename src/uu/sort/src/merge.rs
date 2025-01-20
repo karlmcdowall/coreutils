@@ -174,29 +174,31 @@ pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile + 'static>(
                 // We have a full batch. Break out and merge them.
                 break;
             }
-            let temp_file_to_reopen = match input_temporary_files.pop_front() {
-                Some(file) => file,
-                None => break,
-            };
+
             // Catch the case that we're on the last file and this is the first file in this batch.
             // Then just push it onto the back of the output files and be done.
-            if input_temporary_files.is_empty() && opened_tmp_files.is_empty() {
-                output_temporary_files.push_back(temp_file_to_reopen);
+            if input_temporary_files.len() ==1 && opened_tmp_files.is_empty() {
+                output_temporary_files.push_back(input_temporary_files.pop_front().unwrap());
                 break;
             }
 
-            let temp_file_reopen_result = temp_file_to_reopen.try_reopen();
+            let copy_of_temp_file_to_reopen = match input_temporary_files.front() {
+                Some(file) => file.clone(),
+                None => break,
+            };
+
+            let temp_file_reopen_result = copy_of_temp_file_to_reopen.reopen();
             match temp_file_reopen_result {
                 Ok(temp_file) => {
+                    _ = input_temporary_files.pop_front();
                     opened_tmp_files.push(temp_file);
                 }
                 //                Err(ref error) if error.error == std::io
-                Err((err, unopened_file)) => {
+                Err(_err) => {
                     //                    eprintln!("{}", err);
-                    if opened_tmp_files.len() < 2 {
-                        return Err(Box::new(UIoError::from(err)));
-                    }
-                    input_temporary_files.push_front(unopened_file);
+                    // if opened_tmp_files.len() < 2 {
+                    //     return Err(Box::new(UIoError::from(err)));
+                    // }
                     break;
                 }
             }
