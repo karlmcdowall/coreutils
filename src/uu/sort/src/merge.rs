@@ -151,14 +151,6 @@ pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile>(
     tmp_dir: &mut TmpDirWrapper,
     mut tmp_file: Tmp,
 ) -> UResult<()> {
-    // Handle special case that we only have 1 temporary file.
-    if input_temporary_files.len() == 1 {
-        // Move it to the output... We can do this much more cleanly...
-        // Reopen the temp file.
-        let reopened_temp_file = iter::once(input_temporary_files.pop_front().unwrap().reopen()?);
-        let merger = merge_without_limit2(reopened_temp_file, settings)?;
-        return merger.write_all(settings, output);
-    }
     // Bounce down all the temp files into as few temporary files as we can.
     let mut output_temporary_files = VecDeque::new();
     while !input_temporary_files.is_empty() {
@@ -172,13 +164,6 @@ pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile>(
                 // Check that we've not somehow accidentally violated our merge-size requirement.
                 assert_eq!(opened_tmp_files.len(), settings.merge_batch_size);
                 // We have a full batch. Break out and merge them.
-                break;
-            }
-
-            // Catch the case that we're on the last file and this is the first file in this batch.
-            // Then just push it onto the back of the output files and be done.
-            if input_temporary_files.len() ==1 && opened_tmp_files.is_empty() {
-                output_temporary_files.push_back(input_temporary_files.pop_front().unwrap());
                 break;
             }
 
@@ -206,15 +191,12 @@ pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile>(
 
         // Now we should have a vector of input files, the size should be <= to our merge-size.
         assert!(opened_tmp_files.len() <= settings.merge_batch_size);
-        if opened_tmp_files.is_empty() {
-            // Catch the case that we didn't open anything and just the file to the back of the output_temporary_files.
-            assert!(input_temporary_files.is_empty());
-            break;
-        }
-
-        //We should always have at least 2 input files here. Otherwise we should have bailed out of the loop earlier.
-        assert!(opened_tmp_files.len() >= 2);
         let merger = merge_without_limit2(opened_tmp_files.into_iter(), settings)?;
+        if input_temporary_files.is_empty() && output_temporary_files.is_empty() {
+            // We've managed to open everything we need. Merge to output and get out of here.
+            merger.write_all(settings, output)?;
+            return Ok(());
+        }
         merger.write_all_to(settings, tmp_file.as_write())?;
         output_temporary_files.push_back(tmp_file.finished_writing()?);
         tmp_file = Tmp::create(tmp_dir.next_file()?, settings.compress_prog.as_deref())?;
@@ -581,7 +563,7 @@ fn check_child_success(mut child: Child, program: &str) -> UResult<()> {
 }
 
 /// A temporary file that can be written to.
-pub trait WriteableTmpFile: Sized + 'static{
+pub trait WriteableTmpFile: Sized + 'static {
     type Closed: ClosedTmpFile;
     type InnerWrite: Write;
     fn create(file: (File, PathBuf), compress_prog: Option<&str>) -> UResult<Self>;
@@ -598,7 +580,7 @@ pub trait ClosedTmpFile: Clone {
 }
 
 /// A pre-sorted input for merging.
-pub trait MergeInput: Send + 'static{
+pub trait MergeInput: Send + 'static {
     type InnerRead: Read;
     /// Cleans this `MergeInput` up.
     /// Implementations may delete the backing file.
