@@ -580,7 +580,7 @@ fn check_child_success(mut child: Child, program: &str) -> UResult<()> {
 
 /// A temporary file that can be written to.
 pub trait WriteableTmpFile: Sized {
-    type Closed: ClosedTmpFile;
+    type Closed: ClosedTmpFile + Clone;
     type InnerWrite: Write;
     fn create(file: (File, PathBuf), compress_prog: Option<&str>) -> UResult<Self>;
     /// Closes the temporary file.
@@ -609,6 +609,7 @@ pub struct WriteablePlainTmpFile {
     path: PathBuf,
     file: BufWriter<File>,
 }
+#[derive(Clone)]
 pub struct ClosedPlainTmpFile {
     path: PathBuf,
 }
@@ -676,6 +677,7 @@ pub struct WriteableCompressedTmpFile {
     child: Child,
     child_stdin: BufWriter<ChildStdin>,
 }
+#[derive(Clone)]
 pub struct ClosedCompressedTmpFile {
     path: PathBuf,
     compress_prog: String,
