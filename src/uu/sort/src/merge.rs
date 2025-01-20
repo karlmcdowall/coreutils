@@ -82,7 +82,7 @@ pub fn merge(
     }
 }
 
-pub fn merge_with_file_limit2<Tmp: WriteableTmpFile + 'static>(
+pub fn merge_with_file_limit2<Tmp: WriteableTmpFile>(
     files: &mut [OsString],
     settings: &GlobalSettings,
     output: Output,
@@ -144,7 +144,7 @@ pub fn merge_with_file_limit2<Tmp: WriteableTmpFile + 'static>(
     merge_tmps_with_file_limit2::<Tmp>(temporary_files, settings, output, tmp_dir, tmp_file)
 }
 
-pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile + 'static>(
+pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile>(
     mut input_temporary_files: VecDeque<Tmp::Closed>,
     settings: &GlobalSettings,
     output: Output,
@@ -225,8 +225,8 @@ pub fn merge_tmps_with_file_limit2<Tmp: WriteableTmpFile + 'static>(
 }
 
 // Merge already sorted `MergeInput`s.
-pub fn merge_with_file_limit<Tmp: WriteableTmpFile + 'static>(
-    files: impl ExactSizeIterator<Item = UResult<impl MergeInput + 'static>>,
+pub fn merge_with_file_limit<Tmp: WriteableTmpFile>(
+    files: impl ExactSizeIterator<Item = UResult<impl MergeInput>>,
     settings: &GlobalSettings,
     output: Output,
     tmp_dir: &mut TmpDirWrapper,
@@ -278,7 +278,7 @@ pub fn merge_with_file_limit<Tmp: WriteableTmpFile + 'static>(
 ///
 /// It is the responsibility of the caller to ensure that `files` yields only
 /// as many files as we are allowed to open concurrently.
-fn merge_without_limit<M: MergeInput + 'static, F: Iterator<Item = UResult<M>>>(
+fn merge_without_limit<M: MergeInput, F: Iterator<Item = UResult<M>>>(
     files: F,
     settings: &GlobalSettings,
 ) -> UResult<FileMerger> {
@@ -342,7 +342,7 @@ fn merge_without_limit<M: MergeInput + 'static, F: Iterator<Item = UResult<M>>>(
     })
 }
 
-fn merge_without_limit2<F: Iterator<Item = impl MergeInput + 'static>>(
+fn merge_without_limit2<F: Iterator<Item = impl MergeInput>>(
     files: F,
     settings: &GlobalSettings,
 ) -> UResult<FileMerger> {
@@ -581,8 +581,8 @@ fn check_child_success(mut child: Child, program: &str) -> UResult<()> {
 }
 
 /// A temporary file that can be written to.
-pub trait WriteableTmpFile: Sized {
-    type Closed: ClosedTmpFile + Clone;
+pub trait WriteableTmpFile: Sized + 'static{
+    type Closed: ClosedTmpFile;
     type InnerWrite: Write;
     fn create(file: (File, PathBuf), compress_prog: Option<&str>) -> UResult<Self>;
     /// Closes the temporary file.
@@ -591,14 +591,14 @@ pub trait WriteableTmpFile: Sized {
 }
 
 /// A temporary file that is (temporarily) closed, but can be reopened.
-pub trait ClosedTmpFile {
+pub trait ClosedTmpFile: Clone {
     type Reopened: MergeInput;
     /// Reopens the temporary file.
     fn reopen(self) -> UResult<Self::Reopened>;
 }
 
 /// A pre-sorted input for merging.
-pub trait MergeInput: Send {
+pub trait MergeInput: Send + 'static{
     type InnerRead: Read;
     /// Cleans this `MergeInput` up.
     /// Implementations may delete the backing file.
@@ -753,7 +753,7 @@ impl MergeInput for CompressedTmpMergeInput {
 pub struct PlainMergeInput<R: Read + Send> {
     inner: R,
 }
-impl<R: Read + Send> MergeInput for PlainMergeInput<R> {
+impl<R: Read + Send + 'static> MergeInput for PlainMergeInput<R> {
     type InnerRead = R;
     fn finished_reading(self) -> UResult<()> {
         Ok(())
