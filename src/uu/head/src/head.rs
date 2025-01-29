@@ -7,8 +7,10 @@
 
 use clap::{crate_version, Arg, ArgAction, ArgMatches, Command};
 use std::ffi::OsString;
+use std::fs::File;
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::num::TryFromIntError;
+use std::os::fd::{AsRawFd, FromRawFd};
 use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::{FromIo, UError, UResult};
@@ -239,7 +241,7 @@ impl HeadOptions {
     }
 }
 
-fn read_n_bytes<R>(input: R, n: u64) -> std::io::Result<()>
+fn read_n_bytes<R>(input: R, n: u64) -> std::io::Result<u64>
 where
     R: Read,
 {
@@ -250,31 +252,31 @@ where
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    io::copy(&mut reader, &mut stdout)?;
+    let bytes_read = io::copy(&mut reader, &mut stdout)?;
 
     // Make sure we finish writing everything to the target before
     // exiting. Otherwise, when Rust is implicitly flushing, any
     // error will be silently ignored.
     stdout.flush()?;
 
-    Ok(())
+    Ok(bytes_read)
 }
 
-fn read_n_lines(input: &mut impl std::io::BufRead, n: u64, separator: u8) -> std::io::Result<()> {
+fn read_n_lines(input: &mut impl std::io::BufRead, n: u64, separator: u8) -> std::io::Result<u64> {
     // Read the first `n` lines from the `input` reader.
     let mut reader = take_lines(input, n, separator);
 
     // Write those bytes to `stdout`.
     let mut stdout = std::io::stdout();
 
-    io::copy(&mut reader, &mut stdout)?;
+    let bytes_read = io::copy(&mut reader, &mut stdout)?;
 
     // Make sure we finish writing everything to the target before
     // exiting. Otherwise, when Rust is implicitly flushing, any
     // error will be silently ignored.
     stdout.flush()?;
 
-    Ok(())
+    Ok(bytes_read)
 }
 
 fn catch_too_large_numbers_in_backwards_bytes_or_lines(n: u64) -> Option<usize> {
@@ -288,7 +290,7 @@ fn catch_too_large_numbers_in_backwards_bytes_or_lines(n: u64) -> Option<usize> 
 }
 
 /// Print to stdout all but the last `n` bytes from the given reader.
-fn read_but_last_n_bytes(input: &mut impl std::io::BufRead, n: u64) -> std::io::Result<()> {
+fn read_but_last_n_bytes(input: &mut impl std::io::BufRead, n: u64) -> std::io::Result<u64> {
     if n == 0 {
         //prints everything
         return read_n_bytes(input, u64::MAX);
@@ -327,24 +329,28 @@ fn read_but_last_n_bytes(input: &mut impl std::io::BufRead, n: u64) -> std::io::
                 ring_buffer.extend_from_slice(&buffer[read - n + ring_buffer.len()..read]);
             }
         }
+        return Ok(u64::try_from(total_read).unwrap());
     }
 
-    Ok(())
+    Ok(0)
 }
 
 fn read_but_last_n_lines(
     input: impl std::io::BufRead,
     n: u64,
     separator: u8,
-) -> std::io::Result<()> {
+) -> std::io::Result<u64> {
+    let mut bytes_read: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
         for bytes in take_all_but(lines(input, separator), n) {
-            stdout.write_all(&bytes?)?;
+            let bytes = bytes?;
+            bytes_read += u64::try_from(bytes.len()).unwrap();
+            stdout.write_all(&bytes)?;
         }
     }
-    Ok(())
+    Ok(bytes_read)
 }
 
 /// Return the index in `input` just after the `n`th line from the end.
@@ -425,61 +431,54 @@ fn is_seekable(input: &mut std::fs::File) -> bool {
         && input.seek(SeekFrom::Start(current_pos.unwrap())).is_ok()
 }
 
-fn head_backwards_file(input: &mut std::fs::File, options: &HeadOptions) -> std::io::Result<()> {
-    let st = input.metadata()?;
-    let seekable = is_seekable(input);
-    let blksize_limit = uucore::fs::sane_blksize::sane_blksize_from_metadata(&st);
-    if !seekable || st.len() <= blksize_limit {
-        return head_backwards_without_seek_file(input, options);
-    }
-
-    head_backwards_on_seekable_file(input, options)
-}
-
 fn head_backwards_without_seek_file(
     input: &mut std::fs::File,
     options: &HeadOptions,
-) -> std::io::Result<()> {
+) -> std::io::Result<u64> {
     let reader = &mut std::io::BufReader::with_capacity(BUF_SIZE, &*input);
 
     match options.mode {
-        Mode::AllButLastBytes(n) => read_but_last_n_bytes(reader, n)?,
-        Mode::AllButLastLines(n) => read_but_last_n_lines(reader, n, options.line_ending.into())?,
+        Mode::AllButLastBytes(n) => read_but_last_n_bytes(reader, n),
+        Mode::AllButLastLines(n) => read_but_last_n_lines(reader, n, options.line_ending.into()),
         _ => unreachable!(),
     }
-
-    Ok(())
 }
 
 fn head_backwards_on_seekable_file(
     input: &mut std::fs::File,
     options: &HeadOptions,
-) -> std::io::Result<()> {
+) -> std::io::Result<u64> {
     match options.mode {
         Mode::AllButLastBytes(n) => {
             let size = input.metadata()?.len();
             if n >= size {
-                return Ok(());
+                Ok(0)
             } else {
+                eprintln!("Here1, {size}, {n}");
                 read_n_bytes(
                     &mut std::io::BufReader::with_capacity(BUF_SIZE, input),
                     size - n,
-                )?;
+                )
             }
         }
         Mode::AllButLastLines(n) => {
             let found = find_nth_line_from_end(input, n, options.line_ending.into())?;
+            eprintln!("Here2, {found}");
+
             read_n_bytes(
                 &mut std::io::BufReader::with_capacity(BUF_SIZE, input),
                 found,
-            )?;
+            )
         }
         _ => unreachable!(),
     }
-    Ok(())
 }
 
-fn head_file(input: &mut std::fs::File, options: &HeadOptions) -> std::io::Result<()> {
+fn do_head_file(
+    input: &mut std::fs::File,
+    options: &HeadOptions,
+    seekable: bool,
+) -> std::io::Result<u64> {
     match options.mode {
         Mode::FirstBytes(n) => {
             read_n_bytes(&mut std::io::BufReader::with_capacity(BUF_SIZE, input), n)
@@ -489,8 +488,31 @@ fn head_file(input: &mut std::fs::File, options: &HeadOptions) -> std::io::Resul
             n,
             options.line_ending.into(),
         ),
-        Mode::AllButLastBytes(_) | Mode::AllButLastLines(_) => head_backwards_file(input, options),
+        Mode::AllButLastBytes(_) | Mode::AllButLastLines(_) => {
+            // Todo - rework.
+            let st = input.metadata()?;
+            let blksize_limit = uucore::fs::sane_blksize::sane_blksize_from_metadata(&st);
+            if !seekable || st.len() <= blksize_limit {
+                head_backwards_without_seek_file(input, options)
+            } else {
+                head_backwards_on_seekable_file(input, options)
+            }
+        }
     }
+}
+
+fn head_file(input: &mut std::fs::File, options: &HeadOptions) -> std::io::Result<()> {
+    let seekable = is_seekable(input);
+    if !seekable {
+        eprintln!("Not seekable");
+        let _bytes_coppied = do_head_file(input, options, false)?;
+    } else {
+        eprintln!("Seekable");
+        let initial_position = input.stream_position()?;
+        let bytes_coppied = do_head_file(input, options, true)?;
+        input.seek(SeekFrom::Start(initial_position + bytes_coppied))?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::cognitive_complexity)]
@@ -506,16 +528,9 @@ fn uu_head(options: &HeadOptions) -> UResult<()> {
                     println!("==> standard input <==");
                 }
                 let stdin = std::io::stdin();
-                let mut stdin = stdin.lock();
-
-                match options.mode {
-                    Mode::FirstBytes(n) => read_n_bytes(&mut stdin, n),
-                    Mode::AllButLastBytes(n) => read_but_last_n_bytes(&mut stdin, n),
-                    Mode::FirstLines(n) => read_n_lines(&mut stdin, n, options.line_ending.into()),
-                    Mode::AllButLastLines(n) => {
-                        read_but_last_n_lines(&mut stdin, n, options.line_ending.into())
-                    }
-                }
+                let stdin_raw_fd = stdin.as_raw_fd();
+                let mut stdin_file = unsafe { File::from_raw_fd(stdin_raw_fd) };
+                head_file(&mut stdin_file, options)
             }
             (name, false) => {
                 let mut file = match std::fs::File::open(name) {
