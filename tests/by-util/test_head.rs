@@ -7,14 +7,6 @@
 // spell-checker:ignore (words) seekable
 
 use crate::common::util::TestScenario;
-#[cfg(all(
-    not(target_os = "windows"),
-    not(target_os = "macos"),
-    not(target_os = "android"),
-    not(target_os = "freebsd"),
-    not(target_os = "openbsd")
-))]
-use std::io::Read;
 
 static INPUT: &str = "lorem_ipsum.txt";
 
@@ -408,36 +400,36 @@ fn test_all_but_last_bytes_large_file_piped() {
     let fixtures = &scene.fixtures;
 
     // First, create all our fixtures.
-    let seq_20000_file_name = "seq_20000";
-    let seq_19000_file_name = "seq_19000";
-    let seq_19001_20000_file_name = "seq_19001_20000";
+    let seq_30000_file_name = "seq_30000";
+    let seq_29000_file_name = "seq_29000";
+    let seq_29001_30000_file_name = "seq_29001_30000";
     scene
         .cmd("seq")
-        .arg("20000")
-        .set_stdout(fixtures.make_file(seq_20000_file_name))
+        .arg("30000")
+        .set_stdout(fixtures.make_file(seq_30000_file_name))
         .succeeds();
     scene
         .cmd("seq")
-        .arg("19000")
-        .set_stdout(fixtures.make_file(seq_19000_file_name))
+        .arg("29000")
+        .set_stdout(fixtures.make_file(seq_29000_file_name))
         .succeeds();
     scene
         .cmd("seq")
-        .args(&["19001", "20000"])
-        .set_stdout(fixtures.make_file(seq_19001_20000_file_name))
+        .args(&["29001", "30000"])
+        .set_stdout(fixtures.make_file(seq_29001_30000_file_name))
         .succeeds();
 
-    let seq_19001_20000_file_length = fixtures
-        .open(seq_19001_20000_file_name)
+    let seq_29001_30000_file_length = fixtures
+        .open(seq_29001_30000_file_name)
         .metadata()
         .unwrap()
         .len();
     scene
         .ucmd()
-        .args(&["-c", &format!("-{}", seq_19001_20000_file_length)])
-        .pipe_in_fixture(seq_20000_file_name)
+        .args(&["-c", &format!("-{}", seq_29001_30000_file_length)])
+        .pipe_in_fixture(seq_30000_file_name)
         .succeeds()
-        .stdout_only_fixture(seq_19000_file_name);
+        .stdout_only_fixture(seq_29000_file_name);
 }
 
 #[test]
@@ -447,12 +439,12 @@ fn test_all_but_last_lines_large_file() {
     // than that.
     let scene = TestScenario::new(util_name!());
     let fixtures = &scene.fixtures;
-    let seq_20000_file_name = "seq_20000";
+    let seq_30000_file_name = "seq_30000";
     let seq_1000_file_name = "seq_1000";
     scene
         .cmd("seq")
-        .arg("20000")
-        .set_stdout(fixtures.make_file(seq_20000_file_name))
+        .arg("30000")
+        .set_stdout(fixtures.make_file(seq_30000_file_name))
         .succeeds();
     scene
         .cmd("seq")
@@ -463,19 +455,19 @@ fn test_all_but_last_lines_large_file() {
     // Now run our tests.
     scene
         .ucmd()
-        .args(&["-n", "-19000", seq_20000_file_name])
+        .args(&["-n", "-29000", seq_30000_file_name])
         .succeeds()
         .stdout_only_fixture("seq_1000");
 
     scene
         .ucmd()
-        .args(&["-n", "-20000", seq_20000_file_name])
+        .args(&["-n", "-30000", seq_30000_file_name])
         .succeeds()
         .stdout_only_fixture("emptyfile.txt");
 
     scene
         .ucmd()
-        .args(&["-n", "-20001", seq_20000_file_name])
+        .args(&["-n", "-30001", seq_30000_file_name])
         .succeeds()
         .stdout_only_fixture("emptyfile.txt");
 }
@@ -503,56 +495,14 @@ fn test_validate_stdin_offset_lines() {
     let scene = TestScenario::new(util_name!());
     let fixtures = &scene.fixtures;
 
-    // Test 1 - Print the first n lines
-    fixtures.write("f1", "a\nb\nc\n");
-    let file = fixtures.open("f1");
-    let mut file_shadow = file.try_clone().unwrap();
-    scene
-        .ucmd()
-        .args(&["-n", "1"])
-        .set_stdin(file)
-        .succeeds()
-        .stdout_only("a\n");
-    let mut bytes_remaining_in_stdin = vec![];
-    assert_eq!(
-        file_shadow
-            .read_to_end(&mut bytes_remaining_in_stdin)
-            .unwrap(),
-        4
-    );
-    assert_eq!(
-        String::from_utf8(bytes_remaining_in_stdin).unwrap(),
-        "b\nc\n"
-    );
-
-    // Test 2 - Print all-but the last n lines
-    fixtures.write("f2", "a\nb\nc\n");
-    let file = fixtures.open("f2");
-    let mut file_shadow = file.try_clone().unwrap();
-    scene
-        .ucmd()
-        .args(&["-n", "-1"])
-        .set_stdin(file)
-        .succeeds()
-        .stdout_only("a\nb\n");
-    let mut bytes_remaining_in_stdin = vec![];
-    assert_eq!(
-        file_shadow
-            .read_to_end(&mut bytes_remaining_in_stdin)
-            .unwrap(),
-        2
-    );
-    assert_eq!(String::from_utf8(bytes_remaining_in_stdin).unwrap(), "c\n");
-
-    // Test 3 - Print all but the last n lines, large input file.
     // First, create all our fixtures.
-    let seq_20000_file_name = "seq_20000";
+    let seq_30000_file_name = "seq_30000";
     let seq_1000_file_name = "seq_1000";
-    let seq_1001_20000_file_name = "seq_1001_20000";
+    let seq_1001_30000_file_name = "seq_1001_30000";
     scene
         .cmd("seq")
-        .arg("20000")
-        .set_stdout(fixtures.make_file(seq_20000_file_name))
+        .arg("30000")
+        .set_stdout(fixtures.make_file(seq_30000_file_name))
         .succeeds();
     scene
         .cmd("seq")
@@ -561,15 +511,46 @@ fn test_validate_stdin_offset_lines() {
         .succeeds();
     scene
         .cmd("seq")
-        .args(&["1001", "20000"])
-        .set_stdout(fixtures.make_file(seq_1001_20000_file_name))
+        .args(&["1001", "30000"])
+        .set_stdout(fixtures.make_file(seq_1001_30000_file_name))
         .succeeds();
 
-    let file = fixtures.open(seq_20000_file_name);
+    // Test 1 - Print the first n lines
+    let file = fixtures.open("lorem_ipsum.txt");
     let file_shadow = file.try_clone().unwrap();
     scene
         .ucmd()
-        .args(&["-n", "-19000"])
+        .args(&["-n", "1"])
+        .set_stdin(file)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_1_line.expected");
+    scene
+        .cmd("cat")
+        .set_stdin(file_shadow)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_1_line.remaining");
+
+    // Test 2 - Print all-but the last n lines
+    let file = fixtures.open("lorem_ipsum.txt");
+    let file_shadow = file.try_clone().unwrap();
+    scene
+        .ucmd()
+        .args(&["-n", "-15"])
+        .set_stdin(file)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_backwards_15_lines.expected");
+    scene
+        .cmd("cat")
+        .set_stdin(file_shadow)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_backwards_15_lines.remaining");
+
+    // Test 3 - Print all but the last n lines, large input file.
+    let file = fixtures.open(seq_30000_file_name);
+    let file_shadow = file.try_clone().unwrap();
+    scene
+        .ucmd()
+        .args(&["-n", "-29000"])
         .set_stdin(file)
         .succeeds()
         .stdout_only_fixture(seq_1000_file_name);
@@ -577,7 +558,7 @@ fn test_validate_stdin_offset_lines() {
         .cmd("cat")
         .set_stdin(file_shadow)
         .succeeds()
-        .stdout_only_fixture(seq_1001_20000_file_name);
+        .stdout_only_fixture(seq_1001_30000_file_name);
 }
 
 #[cfg(all(
@@ -604,105 +585,90 @@ fn test_validate_stdin_offset_bytes() {
     let scene = TestScenario::new(util_name!());
     let fixtures = &scene.fixtures;
 
+    // First, create all our fixtures.
+    let seq_30000_file_name = "seq_30000";
+    let seq_29000_file_name = "seq_29000";
+    let seq_29001_30000_file_name = "seq_29001_30000";
+    scene
+        .cmd("seq")
+        .arg("30000")
+        .set_stdout(fixtures.make_file(seq_30000_file_name))
+        .succeeds();
+    scene
+        .cmd("seq")
+        .arg("29000")
+        .set_stdout(fixtures.make_file(seq_29000_file_name))
+        .succeeds();
+    scene
+        .cmd("seq")
+        .args(&["29001", "30000"])
+        .set_stdout(fixtures.make_file(seq_29001_30000_file_name))
+        .succeeds();
+
     // Test 1 - Print the first n bytes
-    fixtures.write("f1", "abc\ndef\n");
-    let file = fixtures.open("f1");
-    let mut file_shadow = file.try_clone().unwrap();
+    let file = fixtures.open("lorem_ipsum.txt");
+    let file_shadow = file.try_clone().unwrap();
     scene
         .ucmd()
-        .args(&["-c", "2"])
+        .args(&["-c", "5"])
         .set_stdin(file)
         .succeeds()
-        .stdout_only("ab");
-    let mut bytes_remaining_in_stdin = vec![];
-    assert_eq!(
-        file_shadow
-            .read_to_end(&mut bytes_remaining_in_stdin)
-            .unwrap(),
-        6
-    );
-    assert_eq!(
-        String::from_utf8(bytes_remaining_in_stdin).unwrap(),
-        "c\ndef\n"
-    );
+        .stdout_only_fixture("lorem_ipsum_5_chars.expected");
+    scene
+        .cmd("cat")
+        .set_stdin(file_shadow)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_5_chars.remaining");
 
     // Test 2 - Print all-but the last n bytes
-    fixtures.write("f2", "abc\ndef\n");
-    let file = fixtures.open("f2");
-    let mut file_shadow = file.try_clone().unwrap();
+    let file = fixtures.open("lorem_ipsum.txt");
+    let file_shadow = file.try_clone().unwrap();
     scene
         .ucmd()
-        .args(&["-c", "-3"])
+        .args(&["-c", "-10"])
         .set_stdin(file)
         .succeeds()
-        .stdout_only("abc\nd");
-    let mut bytes_remaining_in_stdin = vec![];
-    assert_eq!(
-        file_shadow
-            .read_to_end(&mut bytes_remaining_in_stdin)
-            .unwrap(),
-        3
-    );
-    assert_eq!(String::from_utf8(bytes_remaining_in_stdin).unwrap(), "ef\n");
+        .stdout_only_fixture("lorem_ipsum_backwards_file.expected");
+    scene
+        .cmd("cat")
+        .set_stdin(file_shadow)
+        .succeeds()
+        .stdout_only_fixture("lorem_ipsum_backwards_file.remaining");
 
     // Test 3 - Print all-but the last n bytes, n=0 (i.e. print everything)
-    fixtures.write("f3", "abc\ndef\n");
-    let file = fixtures.open("f3");
-    let mut file_shadow = file.try_clone().unwrap();
+    let file = fixtures.open("lorem_ipsum.txt");
+    let file_shadow = file.try_clone().unwrap();
     scene
         .ucmd()
         .args(&["-c", "-0"])
         .set_stdin(file)
         .succeeds()
-        .stdout_only("abc\ndef\n");
-    let mut bytes_remaining_in_stdin = vec![];
-    assert_eq!(
-        file_shadow
-            .read_to_end(&mut bytes_remaining_in_stdin)
-            .unwrap(),
-        0
-    );
-    assert_eq!(String::from_utf8(bytes_remaining_in_stdin).unwrap(), "");
+        .stdout_only_fixture("lorem_ipsum.txt");
+    scene
+        .cmd("cat")
+        .set_stdin(file_shadow)
+        .succeeds()
+        .stdout_only_fixture("emptyfile.txt");
 
     // Test 4 - Print all but the last n bytes, large input file.
-    // First, create all our fixtures.
-    let seq_20000_file_name = "seq_20000";
-    let seq_19000_file_name = "seq_19000";
-    let seq_19001_20000_file_name = "seq_19001_20000";
-    scene
-        .cmd("seq")
-        .arg("20000")
-        .set_stdout(fixtures.make_file(seq_20000_file_name))
-        .succeeds();
-    scene
-        .cmd("seq")
-        .arg("19000")
-        .set_stdout(fixtures.make_file(seq_19000_file_name))
-        .succeeds();
-    scene
-        .cmd("seq")
-        .args(&["19001", "20000"])
-        .set_stdout(fixtures.make_file(seq_19001_20000_file_name))
-        .succeeds();
-
-    let file = fixtures.open(seq_20000_file_name);
+    let file = fixtures.open("seq_30000");
     let file_shadow = file.try_clone().unwrap();
-    let seq_19001_20000_file_length = fixtures
-        .open(seq_19001_20000_file_name)
+    let seq_29001_30000_file_length = fixtures
+        .open(seq_29001_30000_file_name)
         .metadata()
         .unwrap()
         .len();
     scene
         .ucmd()
-        .args(&["-c", &format!("-{}", seq_19001_20000_file_length)])
+        .args(&["-c", &format!("-{}", seq_29001_30000_file_length)])
         .set_stdin(file)
         .succeeds()
-        .stdout_only_fixture(seq_19000_file_name);
+        .stdout_only_fixture(seq_29000_file_name);
     scene
         .cmd("cat")
         .set_stdin(file_shadow)
         .succeeds()
-        .stdout_only_fixture(seq_19001_20000_file_name);
+        .stdout_only_fixture(seq_29001_30000_file_name);
 }
 
 #[cfg(all(
