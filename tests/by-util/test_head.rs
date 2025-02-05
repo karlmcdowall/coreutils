@@ -798,7 +798,7 @@ fn test_write_to_dev_full() {
             new_ucmd!()
                 .pipe_in_fixture(INPUT)
                 .set_stdout(dev_full)
-                .fails()
+                .run()
                 .stderr_contains("error writing 'standard output': No space left on device");
         }
     }

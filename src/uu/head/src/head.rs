@@ -14,7 +14,7 @@ use std::num::TryFromIntError;
 use std::os::fd::{AsRawFd, FromRawFd};
 use thiserror::Error;
 use uucore::display::Quotable;
-use uucore::error::{FromIo, UError, UResult};
+use uucore::error::{strip_errno, FromIo, UError, UResult};
 use uucore::line_ending::LineEnding;
 use uucore::{format_usage, help_about, help_usage, show};
 
@@ -59,6 +59,9 @@ enum HeadError {
 
     #[error("{0}")]
     MatchOption(String),
+
+    #[error("error writing 'standard output': {}", strip_errno(.err))]
+    WriteError { err: io::Error },
 }
 
 impl UError for HeadError {
@@ -455,7 +458,7 @@ fn head_file(input: &mut File, options: &HeadOptions) -> io::Result<u64> {
 fn uu_head(options: &HeadOptions) -> UResult<()> {
     let mut first = true;
     for file in &options.files {
-        let res = match (file.as_str(), options.presume_input_pipe) {
+        let res: Result<(), _> = match (file.as_str(), options.presume_input_pipe) {
             (_, true) | ("-", false) => {
                 if (options.files.len() > 1 && !options.quiet) || options.verbose {
                     if !first {
@@ -527,11 +530,18 @@ fn uu_head(options: &HeadOptions) -> UResult<()> {
             } else {
                 file
             };
-            return Err(HeadError::Io {
-                name: name.to_string(),
-                err: e,
+            match e.kind() {
+                io::ErrorKind::StorageFull => {
+                    return Err(HeadError::WriteError { err: e }.into())
+                }
+                _ => {
+                    return Err(HeadError::Io {
+                        name: name.to_string(),
+                        err: e,
+                    }
+                    .into())
+                }
             }
-            .into());
         }
         first = false;
     }
