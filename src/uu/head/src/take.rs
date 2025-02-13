@@ -66,6 +66,23 @@ where
     }
 }
 
+pub fn take_all_but2<R>(reader: R, n: usize) -> TakeAllBut2<R>
+where
+    R: Read,
+{
+    TakeAllBut2::new(reader, n)
+}
+
+struct TakeAllBut2<R: Read> {
+    reader: R,
+}
+
+impl<R: Read> TakeAllBut2<R> {
+    pub fn new(reader: R, n: usize) -> Self {
+        TakeAllBut2 { reader }
+    }
+}
+
 /// Like `std::io::Take`, but for lines instead of bytes.
 ///
 /// This struct is generally created by calling [`take_lines`] on a
