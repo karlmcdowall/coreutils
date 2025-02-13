@@ -3,11 +3,13 @@
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
 //! Take all but the last elements of an iterator.
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 
 use memchr::memchr_iter;
 
 use uucore::ringbuffer::RingBuffer;
+
+const BUF_SIZE: usize = 65536;
 
 /// Create an iterator over all but the last `n` elements of `iter`.
 ///
@@ -63,6 +65,43 @@ where
             Some(value) => self.buf.push_back(value),
             None => None,
         }
+    }
+}
+
+struct TakeAllBuffer {
+    buffer: [u8; BUF_SIZE],
+    valid_bytes: usize,
+}
+
+impl TakeAllBuffer {
+    fn new() -> Self {
+        TakeAllBuffer {
+            buffer: [0; BUF_SIZE],
+            valid_bytes: 0,
+        }
+    }
+    fn fill_buffer<R>(&mut self, reader: &mut R) -> std::io::Result<usize>
+    where
+        R: Read,
+    {
+        self.valid_bytes = 0;
+        loop {
+            let read_result = reader.read(&mut self.buffer[self.valid_bytes..]);
+            match read_result {
+                Ok(0) => break, // EoF
+                Ok(n) => self.valid_bytes += n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+            if self.valid_bytes == self.buffer.len() {
+                break;
+            }
+        }
+        Ok(self.valid_bytes)
+    }
+
+    fn valid_buffer(&self) -> &[u8] {
+        &self.buffer[0..self.valid_bytes]
     }
 }
 
