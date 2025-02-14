@@ -3,6 +3,7 @@
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
 //! Take all but the last elements of an iterator.
+use std::collections::VecDeque;
 use std::io::{ErrorKind, Read};
 
 use memchr::memchr_iter;
@@ -69,14 +70,14 @@ where
 }
 
 struct TakeAllBuffer {
-    buffer: [u8; BUF_SIZE],
+    buffer: [u8; TakeAllBuffer::buffer_size()],
     valid_bytes: usize,
 }
 
 impl TakeAllBuffer {
     fn new() -> Self {
         TakeAllBuffer {
-            buffer: [0; BUF_SIZE],
+            buffer: [0; TakeAllBuffer::buffer_size()],
             valid_bytes: 0,
         }
     }
@@ -103,22 +104,52 @@ impl TakeAllBuffer {
     fn valid_buffer(&self) -> &[u8] {
         &self.buffer[0..self.valid_bytes]
     }
+
+    const fn buffer_size() -> usize {
+        BUF_SIZE
+    }
 }
 
-pub fn take_all_but2<R>(reader: R, n: usize) -> TakeAllBut2<R>
+pub fn take_all_but2<R>(reader: R, n: usize) -> std::io::Result<TakeAllBut2<R>>
 where
     R: Read,
 {
     TakeAllBut2::new(reader, n)
 }
 
-struct TakeAllBut2<R: Read> {
+pub struct TakeAllBut2<R: Read> {
     reader: R,
+    buffers: VecDeque<Box<TakeAllBuffer>>,
+    total_buffered_bytes: usize,
 }
 
 impl<R: Read> TakeAllBut2<R> {
-    pub fn new(reader: R, n: usize) -> Self {
-        TakeAllBut2 { reader }
+    pub fn new(reader: R, n: usize) -> std::io::Result<Self> {
+        let mut take_all = TakeAllBut2 {
+            reader,
+            buffers: VecDeque::with_capacity(Self::number_of_buffers_required(n)),
+            total_buffered_bytes: 0,
+        };
+        for _ in 0..Self::number_of_buffers_required(n) {
+            let mut buffer = Box::new(TakeAllBuffer::new());
+            let bytes_filled = buffer.fill_buffer(&mut take_all.reader)?;
+            take_all.total_buffered_bytes+=bytes_filled;
+            take_all.buffers.push_back(buffer);
+            // If we didn't fill the buffer we must have hit the file end.
+            if bytes_filled != TakeAllBuffer::buffer_size() {
+                break;
+                }
+        }
+        Ok(take_all)
+    }
+    fn number_of_buffers_required(n: usize) -> usize {
+        // Based on TakeAllBuffer::buffer_size and needing to always hold-back `n` bytes,
+        // calculate how many buffers we require.
+        assert!(n > 0);
+        let number_of_buffers_to_hold_n = ((n - 1) / TakeAllBuffer::buffer_size()) + 1;
+        // We need one more buffer than this since we drain before we fill in the main
+        // iteration loop.
+        number_of_buffers_to_hold_n + 1
     }
 }
 
@@ -235,5 +266,11 @@ mod tests {
         assert_eq!(Some(String::from("b")), iter.next());
         assert_eq!(Some(String::from("c")), iter.next());
         assert_eq!(None, iter.next());
+    }
+
+    #[test]
+    fn take_all_but_2() {
+        let input_reader = std::io::Cursor::new("a\nb\nc\n");
+        let tab2 = take_all_but2(input_reader, 2);
     }
 }
