@@ -3,11 +3,16 @@
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
 //! Take all but the last elements of an iterator.
+use std::io::ErrorKind;
 use std::io::Read;
+
+use std::collections::VecDeque;
 
 use memchr::memchr_iter;
 
 use uucore::ringbuffer::RingBuffer;
+
+const BUF_SIZE: usize = 65536;
 
 /// Create an iterator over all but the last `n` elements of `iter`.
 ///
@@ -63,6 +68,130 @@ where
             Some(value) => self.buf.push_back(value),
             None => None,
         }
+    }
+}
+
+struct TakeAllBuffer {
+    buffer: Vec<u8>,
+    valid_bytes: usize,
+    start_index: usize,
+}
+
+impl TakeAllBuffer {
+    fn new() -> Self {
+        let mut instance = TakeAllBuffer {
+            buffer: vec![],
+            valid_bytes: 0,
+            start_index: 0,
+        };
+        instance.buffer.resize(Self::buffer_size(), 0);
+        instance
+    }
+    fn fill_buffer<R>(&mut self, reader: &mut R) -> std::io::Result<usize>
+    where
+        R: Read,
+    {
+        self.valid_bytes = 0;
+        loop {
+            let read_result = reader.read(&mut self.buffer[self.valid_bytes..]);
+            match read_result {
+                Ok(0) => break, // EoF
+                Ok(n) => self.valid_bytes += n,
+                Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+            if self.valid_bytes == self.buffer.len() {
+                break;
+            }
+        }
+        Ok(self.valid_bytes)
+    }
+
+    fn valid_bytes(&self) -> usize {
+        self.valid_bytes - self.start_index
+    }
+
+    fn valid_buffer(&self) -> &[u8] {
+        &self.buffer[self.start_index..self.valid_bytes]
+    }
+
+    const fn buffer_size() -> usize {
+        BUF_SIZE
+    }
+
+    fn consume(&mut self, n: usize) -> &[u8] {
+        let end_index = n + self.start_index;
+        assert!(end_index <= self.valid_bytes);
+        let slice = &self.buffer[self.start_index..end_index];
+        self.start_index = end_index;
+        slice
+    }
+}
+
+pub fn take_all_but2<R: Read>(reader: R, n: usize) -> TakeAllBut2<R> {
+    TakeAllBut2::new(reader, n)
+}
+
+pub struct TakeAllBut2<R>
+where
+    R: Read,
+{
+    reader: R,
+    n: usize,
+    buffers: VecDeque<TakeAllBuffer>,
+    buffered_bytes: usize,
+}
+
+impl<R: Read> TakeAllBut2<R> {
+    fn new(reader: R, n: usize) -> Self {
+        TakeAllBut2 {
+            reader,
+            n,
+            buffers: VecDeque::new(),
+            buffered_bytes: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for TakeAllBut2<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
+        let target_minimum_bytes = buf.len() + self.n;
+        while self.buffered_bytes < target_minimum_bytes {
+            let mut new_buffer = TakeAllBuffer::new();
+            let filled_bytes = new_buffer.fill_buffer(&mut self.reader)?;
+            self.buffers.push_back(new_buffer);
+            self.buffered_bytes += filled_bytes;
+            // Todo - add a method onto TakeAllBuffer for this...
+            if filled_bytes != TakeAllBuffer::buffer_size() {
+                // If we only managed a partial fill then we must be EOF -> break.
+                break;
+            }
+        }
+
+        // Now copy as many bytes as we can into buf.
+        let mut bytes_coppied = 0;
+        while bytes_coppied < buf.len() {
+            if self.buffered_bytes <= self.n {
+                break;
+            }
+            let bytes_remaining_to_copy = buf.len() - bytes_coppied;
+            let front_buffer = &mut self.buffers.front_mut().unwrap();
+
+            let bytes_to_copy_from_front_buffer = front_buffer
+                .valid_bytes()
+                .min(bytes_remaining_to_copy);
+            let buffer_to_copy = front_buffer.consume(bytes_to_copy_from_front_buffer);
+            let target_slice = &mut buf[bytes_coppied..(bytes_coppied+bytes_to_copy_from_front_buffer)];
+            target_slice.clone_from_slice(buffer_to_copy);
+            bytes_coppied+=bytes_to_copy_from_front_buffer;
+            self.buffered_bytes -= bytes_coppied;
+            if front_buffer.valid_bytes() == 0 {
+                self.buffers.pop_front();
+            }
+        }
+
+        Ok(bytes_coppied)
     }
 }
 
