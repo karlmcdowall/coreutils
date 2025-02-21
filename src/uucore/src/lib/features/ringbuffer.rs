@@ -42,7 +42,7 @@ use std::collections::VecDeque;
 /// [`from_iter`]: struct.RingBuffer.html#method.from_iter
 pub struct RingBuffer<T> {
     /// The data stored in the ring buffer.
-    pub data: VecDeque<T>,
+    data: VecDeque<T>,
 
     /// The maximum number of elements that the ring buffer can hold.
     size: usize,

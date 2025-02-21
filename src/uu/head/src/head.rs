@@ -9,7 +9,7 @@ use clap::{crate_version, Arg, ArgAction, ArgMatches, Command};
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::TryFromIntError;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -17,7 +17,6 @@ use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::{FromIo, UError, UResult};
 use uucore::line_ending::LineEnding;
-use uucore::lines::lines;
 use uucore::{format_usage, help_about, help_usage, show};
 
 const BUF_SIZE: usize = 65536;
@@ -37,7 +36,8 @@ mod options {
 
 mod parse;
 mod take;
-use take::take_all_but;
+use take::copy_all_but_bytes;
+use take::copy_all_but_lines;
 use take::take_lines;
 
 #[derive(Error, Debug)]
@@ -288,41 +288,36 @@ fn catch_too_large_numbers_in_backwards_bytes_or_lines(n: u64) -> Option<usize> 
     }
 }
 
-fn read_but_last_n_bytes(input: impl std::io::BufRead, n: u64) -> std::io::Result<u64> {
-    let mut bytes_written = 0;
-    if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
-        let stdout = std::io::stdout();
-        let stdout = stdout.lock();
-        // Even though stdout is buffered, it will flush on each newline in the
-        // input stream. This can be costly, so add an extra layer of buffering
-        // over the top. This gives a significant speedup (approx 4x).
-        let mut writer = BufWriter::with_capacity(BUF_SIZE, stdout);
-        for byte in take_all_but(input.bytes(), n) {
-            writer.write_all(&[byte?])?;
-            bytes_written += 1;
-        }
-        // Make sure we finish writing everything to the target before
-        // exiting. Otherwise, when Rust is implicitly flushing, any
-        // error will be silently ignored.
-        writer.flush()?;
-    }
-    Ok(bytes_written)
-}
-
-fn read_but_last_n_lines(
-    input: impl std::io::BufRead,
-    n: u64,
-    separator: u8,
-) -> std::io::Result<u64> {
+fn read_but_last_n_bytes(mut input: impl Read, n: u64) -> std::io::Result<u64> {
     let mut bytes_written: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
-        for bytes in take_all_but(lines(input, separator), n) {
-            let bytes = bytes?;
-            bytes_written += u64::try_from(bytes.len()).unwrap();
-            stdout.write_all(&bytes)?;
-        }
+
+        bytes_written = copy_all_but_bytes(&mut input, &mut stdout, n)?
+            .try_into()
+            .unwrap();
+
+        // Make sure we finish writing everything to the target before
+        // exiting. Otherwise, when Rust is implicitly flushing, any
+        // error will be silently ignored.
+        stdout.flush()?;
+    }
+    Ok(bytes_written)
+}
+
+fn read_but_last_n_lines(mut input: impl Read, n: u64, separator: u8) -> std::io::Result<u64> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    if n == 0 {
+        return io::copy(&mut input, &mut stdout);
+    }
+    let mut bytes_written: u64 = 0;
+    if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
+        bytes_written = copy_all_but_lines(input, &mut stdout, n, separator)?
+            .try_into()
+            .unwrap();
+
         // Make sure we finish writing everything to the target before
         // exiting. Otherwise, when Rust is implicitly flushing, any
         // error will be silently ignored.
@@ -424,10 +419,10 @@ fn head_backwards_without_seek_file(
     input: &mut std::fs::File,
     options: &HeadOptions,
 ) -> std::io::Result<u64> {
-    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
+    //    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
     match options.mode {
-        Mode::AllButLastBytes(n) => read_but_last_n_bytes(reader, n),
-        Mode::AllButLastLines(n) => read_but_last_n_lines(reader, n, options.line_ending.into()),
+        Mode::AllButLastBytes(n) => read_but_last_n_bytes(input, n),
+        Mode::AllButLastLines(n) => read_but_last_n_lines(input, n, options.line_ending.into()),
         _ => unreachable!(),
     }
 }
@@ -442,18 +437,12 @@ fn head_backwards_on_seekable_file(
             if n >= size {
                 Ok(0)
             } else {
-                read_n_bytes(
-                    &mut std::io::BufReader::with_capacity(BUF_SIZE, input),
-                    size - n,
-                )
+                read_n_bytes(input, size - n)
             }
         }
         Mode::AllButLastLines(n) => {
             let found = find_nth_line_from_end(input, n, options.line_ending.into())?;
-            read_n_bytes(
-                &mut std::io::BufReader::with_capacity(BUF_SIZE, input),
-                found,
-            )
+            read_n_bytes(input, found)
         }
         _ => unreachable!(),
     }
@@ -461,9 +450,7 @@ fn head_backwards_on_seekable_file(
 
 fn head_file(input: &mut std::fs::File, options: &HeadOptions) -> std::io::Result<u64> {
     match options.mode {
-        Mode::FirstBytes(n) => {
-            read_n_bytes(&mut std::io::BufReader::with_capacity(BUF_SIZE, input), n)
-        }
+        Mode::FirstBytes(n) => read_n_bytes(input, n),
         Mode::FirstLines(n) => read_n_lines(
             &mut std::io::BufReader::with_capacity(BUF_SIZE, input),
             n,
