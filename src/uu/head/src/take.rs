@@ -175,16 +175,18 @@ impl<R: Read> Read for TakeAllBut2<R> {
             if self.buffered_bytes <= self.n {
                 break;
             }
-            let bytes_remaining_to_copy = buf.len() - bytes_coppied;
+            let max_bytes_to_copy = self.buffered_bytes - self.n;
+            assert!(max_bytes_to_copy > 0);
+            let bytes_remaining_to_copy = (buf.len() - bytes_coppied).min(max_bytes_to_copy);
             let front_buffer = &mut self.buffers.front_mut().unwrap();
 
-            let bytes_to_copy_from_front_buffer = front_buffer
-                .valid_bytes()
-                .min(bytes_remaining_to_copy);
+            let bytes_to_copy_from_front_buffer =
+                front_buffer.valid_bytes().min(bytes_remaining_to_copy);
             let buffer_to_copy = front_buffer.consume(bytes_to_copy_from_front_buffer);
-            let target_slice = &mut buf[bytes_coppied..(bytes_coppied+bytes_to_copy_from_front_buffer)];
+            let target_slice =
+                &mut buf[bytes_coppied..(bytes_coppied + bytes_to_copy_from_front_buffer)];
             target_slice.clone_from_slice(buffer_to_copy);
-            bytes_coppied+=bytes_to_copy_from_front_buffer;
+            bytes_coppied += bytes_to_copy_from_front_buffer;
             self.buffered_bytes -= bytes_coppied;
             if front_buffer.valid_bytes() == 0 {
                 self.buffers.pop_front();
