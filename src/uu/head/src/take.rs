@@ -92,6 +92,7 @@ impl TakeAllBuffer {
         R: Read,
     {
         self.valid_bytes = 0;
+        self.start_index = 0;
         loop {
             let read_result = reader.read(&mut self.buffer[self.valid_bytes..]);
             match read_result {
@@ -139,6 +140,7 @@ where
     reader: R,
     n: usize,
     buffers: VecDeque<TakeAllBuffer>,
+    empty_buffers: Vec<TakeAllBuffer>,
     buffered_bytes: usize,
 }
 
@@ -148,6 +150,7 @@ impl<R: Read> TakeAllBut2<R> {
             reader,
             n,
             buffers: VecDeque::new(),
+            empty_buffers: vec![],
             buffered_bytes: 0,
         }
     }
@@ -158,7 +161,8 @@ impl<R: Read> Read for TakeAllBut2<R> {
         // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
         let target_minimum_bytes = buf.len() + self.n;
         while self.buffered_bytes < target_minimum_bytes {
-            let mut new_buffer = TakeAllBuffer::new();
+            let new_buffer = self.empty_buffers.pop();
+            let mut new_buffer = new_buffer.unwrap_or_else(||TakeAllBuffer::new());
             let filled_bytes = new_buffer.fill_buffer(&mut self.reader)?;
             self.buffers.push_back(new_buffer);
             self.buffered_bytes += filled_bytes;
@@ -185,11 +189,11 @@ impl<R: Read> Read for TakeAllBut2<R> {
             let buffer_to_copy = front_buffer.consume(bytes_to_copy_from_front_buffer);
             let target_slice =
                 &mut buf[bytes_coppied..(bytes_coppied + bytes_to_copy_from_front_buffer)];
-            target_slice.clone_from_slice(buffer_to_copy);
+            target_slice.copy_from_slice(buffer_to_copy);
             bytes_coppied += bytes_to_copy_from_front_buffer;
             self.buffered_bytes -= bytes_coppied;
             if front_buffer.valid_bytes() == 0 {
-                self.buffers.pop_front();
+                self.empty_buffers.push(self.buffers.pop_front().unwrap());
             }
         }
 

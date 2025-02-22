@@ -289,15 +289,16 @@ fn catch_too_large_numbers_in_backwards_bytes_or_lines(n: u64) -> Option<usize> 
     }
 }
 
-fn read_but_last_n_bytes(input: impl std::io::BufRead, n: u64) -> std::io::Result<u64> {
+fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
     let mut bytes_written = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
-        let mut stdout = stdout.lock();
+        let stdout = stdout.lock();
+        let mut writer = std::io::BufWriter::with_capacity(BUF_SIZE, stdout);
 
         let mut reader = take_all_but2(input, n);
 
-        bytes_written = io::copy(&mut reader, &mut stdout)?;
+        bytes_written = io::copy(&mut reader, &mut writer)?;
 
         // Even though stdout is buffered, it will flush on each newline in the
         // input stream. This can be costly, so add an extra layer of buffering
@@ -310,7 +311,7 @@ fn read_but_last_n_bytes(input: impl std::io::BufRead, n: u64) -> std::io::Resul
         // Make sure we finish writing everything to the target before
         // exiting. Otherwise, when Rust is implicitly flushing, any
         // error will be silently ignored.
-        stdout.flush()?;
+        writer.flush()?;
     }
     Ok(bytes_written)
 }
@@ -323,16 +324,17 @@ fn read_but_last_n_lines(
     let mut bytes_written: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
-        let mut stdout = stdout.lock();
+        let stdout = stdout.lock();
+        let mut writer = std::io::BufWriter::with_capacity(BUF_SIZE, stdout);
         for bytes in take_all_but(lines(input, separator), n) {
             let bytes = bytes?;
             bytes_written += u64::try_from(bytes.len()).unwrap();
-            stdout.write_all(&bytes)?;
+            writer.write_all(&bytes)?;
         }
         // Make sure we finish writing everything to the target before
         // exiting. Otherwise, when Rust is implicitly flushing, any
         // error will be silently ignored.
-        stdout.flush()?;
+        writer.flush()?;
     }
     Ok(bytes_written)
 }
@@ -430,10 +432,10 @@ fn head_backwards_without_seek_file(
     input: &mut std::fs::File,
     options: &HeadOptions,
 ) -> std::io::Result<u64> {
-    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
+//    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
     match options.mode {
-        Mode::AllButLastBytes(n) => read_but_last_n_bytes(reader, n),
-        Mode::AllButLastLines(n) => read_but_last_n_lines(reader, n, options.line_ending.into()),
+        Mode::AllButLastBytes(n) => read_but_last_n_bytes(input, n),
+        Mode::AllButLastLines(n) => read_but_last_n_lines(std::io::BufReader::with_capacity(BUF_SIZE, &*input), n, options.line_ending.into()),
         _ => unreachable!(),
     }
 }
