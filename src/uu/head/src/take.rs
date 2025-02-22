@@ -112,10 +112,6 @@ impl TakeAllBuffer {
         self.valid_bytes - self.start_index
     }
 
-    fn valid_buffer(&self) -> &[u8] {
-        &self.buffer[self.start_index..self.valid_bytes]
-    }
-
     const fn buffer_size() -> usize {
         BUF_SIZE
     }
@@ -161,8 +157,7 @@ impl<R: Read> Read for TakeAllBut2<R> {
         // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
         let target_minimum_bytes = buf.len() + self.n;
         while self.buffered_bytes < target_minimum_bytes {
-            let new_buffer = self.empty_buffers.pop();
-            let mut new_buffer = new_buffer.unwrap_or_else(||TakeAllBuffer::new());
+            let mut new_buffer = self.empty_buffers.pop().unwrap_or_else(TakeAllBuffer::new);
             let filled_bytes = new_buffer.fill_buffer(&mut self.reader)?;
             self.buffers.push_back(new_buffer);
             self.buffered_bytes += filled_bytes;
@@ -176,9 +171,11 @@ impl<R: Read> Read for TakeAllBut2<R> {
         // Now copy as many bytes as we can into buf.
         let mut bytes_coppied = 0;
         while bytes_coppied < buf.len() {
+            // If we've got <= n bytes buffered we must be done - break.
             if self.buffered_bytes <= self.n {
                 break;
             }
+            // Limit the number of bytes we want to copy so we don't drop bellow n-bytes buffered.
             let max_bytes_to_copy = self.buffered_bytes - self.n;
             assert!(max_bytes_to_copy > 0);
             let bytes_remaining_to_copy = (buf.len() - bytes_coppied).min(max_bytes_to_copy);

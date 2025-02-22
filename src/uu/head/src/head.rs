@@ -9,7 +9,7 @@ use clap::{crate_version, Arg, ArgAction, ArgMatches, Command};
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::fs::File;
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::num::TryFromIntError;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -432,10 +432,14 @@ fn head_backwards_without_seek_file(
     input: &mut std::fs::File,
     options: &HeadOptions,
 ) -> std::io::Result<u64> {
-//    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
+    //    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
     match options.mode {
         Mode::AllButLastBytes(n) => read_but_last_n_bytes(input, n),
-        Mode::AllButLastLines(n) => read_but_last_n_lines(std::io::BufReader::with_capacity(BUF_SIZE, &*input), n, options.line_ending.into()),
+        Mode::AllButLastLines(n) => read_but_last_n_lines(
+            std::io::BufReader::with_capacity(BUF_SIZE, &*input),
+            n,
+            options.line_ending.into(),
+        ),
         _ => unreachable!(),
     }
 }
