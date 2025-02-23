@@ -133,7 +133,8 @@ pub struct TakeAllBut2<R>
 where
     R: Read,
 {
-    reader: R,
+    // Todo - rename to inner
+    inner: R,
     n: usize,
     buffers: VecDeque<TakeAllBuffer>,
     empty_buffers: Vec<TakeAllBuffer>,
@@ -143,7 +144,7 @@ where
 impl<R: Read> TakeAllBut2<R> {
     fn new(reader: R, n: usize) -> Self {
         TakeAllBut2 {
-            reader,
+            inner: reader,
             n,
             buffers: VecDeque::new(),
             empty_buffers: vec![],
@@ -158,7 +159,7 @@ impl<R: Read> Read for TakeAllBut2<R> {
         let target_minimum_bytes = buf.len() + self.n;
         while self.buffered_bytes < target_minimum_bytes {
             let mut new_buffer = self.empty_buffers.pop().unwrap_or_else(TakeAllBuffer::new);
-            let filled_bytes = new_buffer.fill_buffer(&mut self.reader)?;
+            let filled_bytes = new_buffer.fill_buffer(&mut self.inner)?;
             self.buffers.push_back(new_buffer);
             self.buffered_bytes += filled_bytes;
             // Todo - add a method onto TakeAllBuffer for this...
