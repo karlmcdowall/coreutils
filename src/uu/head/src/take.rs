@@ -16,44 +16,41 @@ const BUF_SIZE: usize = 65536;
 
 struct TakeAllBuffer {
     buffer: Vec<u8>,
-    // Todo - remove valid_bytes and use truncate instead.
-    valid_bytes: usize,
     start_index: usize,
 }
 
 impl TakeAllBuffer {
     fn new() -> Self {
-        let mut instance = TakeAllBuffer {
+        TakeAllBuffer {
             buffer: vec![],
-            valid_bytes: 0,
             start_index: 0,
-        };
-        instance.buffer.resize(Self::buffer_size(), 0);
-        instance
+        }
     }
     fn fill_buffer<R>(&mut self, reader: &mut R) -> std::io::Result<usize>
     where
         R: Read,
     {
-        self.valid_bytes = 0;
+        self.buffer.resize(Self::buffer_size(), 0);
+        let mut valid_bytes = 0;
         self.start_index = 0;
         loop {
-            let read_result = reader.read(&mut self.buffer[self.valid_bytes..]);
+            let read_result = reader.read(&mut self.buffer[valid_bytes..]);
             match read_result {
                 Ok(0) => break, // EoF
-                Ok(n) => self.valid_bytes += n,
+                Ok(n) => valid_bytes += n,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                 Err(e) => return Err(e),
             }
-            if self.valid_bytes == self.buffer.len() {
+            if valid_bytes == self.buffer.len() {
                 break;
             }
         }
-        Ok(self.valid_bytes)
+        self.buffer.truncate(valid_bytes);
+        Ok(valid_bytes)
     }
 
-    fn valid_bytes(&self) -> usize {
-        self.valid_bytes - self.start_index
+    fn remaining_bytes(&self) -> usize {
+        self.buffer.len() - self.start_index
     }
 
     const fn buffer_size() -> usize {
@@ -62,7 +59,7 @@ impl TakeAllBuffer {
 
     fn consume(&mut self, n: usize) -> &[u8] {
         let end_index = n + self.start_index;
-        assert!(end_index <= self.valid_bytes);
+        assert!(end_index <= self.buffer.len());
         let slice = &self.buffer[self.start_index..end_index];
         self.start_index = end_index;
         slice
@@ -127,14 +124,14 @@ impl<R: Read> Read for TakeAllBut2<R> {
             let front_buffer = &mut self.buffers.front_mut().unwrap();
 
             let bytes_to_copy_from_front_buffer =
-                front_buffer.valid_bytes().min(bytes_remaining_to_copy);
+                front_buffer.remaining_bytes().min(bytes_remaining_to_copy);
             let buffer_to_copy = front_buffer.consume(bytes_to_copy_from_front_buffer);
             let target_slice =
                 &mut buf[bytes_coppied..(bytes_coppied + bytes_to_copy_from_front_buffer)];
             target_slice.copy_from_slice(buffer_to_copy);
             bytes_coppied += bytes_to_copy_from_front_buffer;
             self.buffered_bytes -= bytes_coppied;
-            if front_buffer.valid_bytes() == 0 {
+            if front_buffer.remaining_bytes() == 0 {
                 self.empty_buffers.push(self.buffers.pop_front().unwrap());
             }
         }
@@ -156,6 +153,7 @@ impl TakeAllLinesBuffer {
     fn new(separator: u8) -> Self {
         let mut instance = TakeAllLinesBuffer {
             buffer: vec![],
+            // Todo - use Vec::truncate and remove valid_bytes.
             valid_bytes: 0,
             start_index: 0,
             separator,
