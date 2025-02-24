@@ -10,66 +10,9 @@ use std::collections::VecDeque;
 
 use memchr::{memchr, memchr_iter};
 
-use uucore::ringbuffer::RingBuffer;
+//use uucore::ringbuffer::RingBuffer;
 
 const BUF_SIZE: usize = 65536;
-
-/// Create an iterator over all but the last `n` elements of `iter`.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// let data = [1, 2, 3, 4, 5];
-/// let n = 2;
-/// let mut iter = take_all_but(data.iter(), n);
-/// assert_eq!(Some(4), iter.next());
-/// assert_eq!(Some(5), iter.next());
-/// assert_eq!(None, iter.next());
-/// ```
-pub fn take_all_but<I: Iterator>(iter: I, n: usize) -> TakeAllBut<I> {
-    TakeAllBut::new(iter, n)
-}
-
-/// An iterator that only iterates over the last elements of another iterator.
-pub struct TakeAllBut<I: Iterator> {
-    iter: I,
-    buf: RingBuffer<<I as Iterator>::Item>,
-}
-
-impl<I: Iterator> TakeAllBut<I> {
-    pub fn new(mut iter: I, n: usize) -> Self {
-        // Create a new ring buffer and fill it up.
-        //
-        // If there are fewer than `n` elements in `iter`, then we
-        // exhaust the iterator so that whenever `TakeAllBut::next()` is
-        // called, it will return `None`, as expected.
-        let mut buf = RingBuffer::new(n);
-        for _ in 0..n {
-            let value = match iter.next() {
-                None => {
-                    break;
-                }
-                Some(x) => x,
-            };
-            buf.push_back(value);
-        }
-        Self { iter, buf }
-    }
-}
-
-impl<I: Iterator> Iterator for TakeAllBut<I>
-where
-    I: Iterator,
-{
-    type Item = <I as Iterator>::Item;
-
-    fn next(&mut self) -> Option<<I as Iterator>::Item> {
-        match self.iter.next() {
-            Some(value) => self.buf.push_back(value),
-            None => None,
-        }
-    }
-}
 
 struct TakeAllBuffer {
     buffer: Vec<u8>,
@@ -241,7 +184,7 @@ impl TakeAllLinesBuffer {
             }
         }
         // Now count the number of lines...
-        for i in memchr_iter(self.separator, &self.buffer[..]) {
+        for _i in memchr_iter(self.separator, &self.buffer[..]) {
             self.lines += 1;
         }
         Ok(self.valid_bytes)
@@ -267,7 +210,11 @@ impl TakeAllLinesBuffer {
         self.valid_bytes - self.start_index
     }
     fn next_offset(&self) -> Option<usize> {
-        memchr(self.separator, &self.buffer[self.start_index..self.valid_bytes])
+        memchr(
+            self.separator,
+            &self.buffer[self.start_index..self.valid_bytes],
+        )
+        .map(|n| n + 1)
     }
 
     fn lines(&self) -> usize {
@@ -317,17 +264,17 @@ impl<R: Read> Read for TakeAllButLines<R> {
             if bytes_read == 0 {
                 break;
             }
-            self.buffered_lines+=new_buffer.lines();
-             eprintln!("Read {} new lines", new_buffer.lines());
+            self.buffered_lines += new_buffer.lines();
+            //             eprintln!("Read {} new lines", new_buffer.lines());
             self.buffers.push_back(new_buffer);
         }
 
-        eprintln!("About to start writing. Buffered_lines = {}", self.buffered_lines);
-        eprintln!("Bufffer count = {}", self.buffers.len());
+        //        eprintln!("About to start writing. Buffered_lines = {}", self.buffered_lines);
+        //        eprintln!("Bufffer count = {}", self.buffers.len());
         let mut bytes_coppied = 0;
         while self.buffered_lines > self.n {
-            eprintln!("About to start writing. Buffered_lines = {}", self.buffered_lines);
-            eprintln!("Bufffer count = {}", self.buffers.len());
+            //            eprintln!("About to start writing. Buffered_lines = {}", self.buffered_lines);
+            //            eprintln!("Bufffer count = {}", self.buffers.len());
 
             // Copy as many lines into buf as we can fit, without dropping below our
             // minimum number of buffered lines.
@@ -336,22 +283,23 @@ impl<R: Read> Read for TakeAllButLines<R> {
             let next_string_offset = front_buffer.next_offset();
             let bytes_remaining_in_buf = buf.len() - bytes_coppied;
             // This is naughty that we don't decrement front_buffer.lines.
-            let bytes_to_consume = (next_string_offset.unwrap_or_else(||front_buffer.remaining_bytes()) +1 ).min(bytes_remaining_in_buf);
-            if next_string_offset.is_some_and(|val| val + 1 == bytes_to_consume) {
+            let bytes_to_consume = next_string_offset
+                .unwrap_or_else(|| front_buffer.remaining_bytes())
+                .min(bytes_remaining_in_buf);
+            if next_string_offset.is_some_and(|val| val == bytes_to_consume) {
                 // We're consuming a whole line. Decrement our count.
-                self.buffered_lines -=1;
+                self.buffered_lines -= 1;
             }
             let buffer_to_copy = front_buffer.consume(bytes_to_consume);
-            let target_slice =
-                &mut buf[bytes_coppied..(bytes_coppied + bytes_to_consume)];
+            let target_slice = &mut buf[bytes_coppied..(bytes_coppied + bytes_to_consume)];
             target_slice.copy_from_slice(buffer_to_copy);
             bytes_coppied += bytes_to_consume;
-            eprintln!("bytes_to_consume: {}, bytes_coppied: {}", bytes_to_consume, bytes_coppied);
+            //            eprintln!("bytes_to_consume: {}, bytes_coppied: {}", bytes_to_consume, bytes_coppied);
             if front_buffer.valid_bytes() == 0 {
                 self.empty_buffers.push(self.buffers.pop_front().unwrap());
             }
         }
-        eprintln!("Coppied {}", bytes_coppied);
+        //        eprintln!("Coppied {}", bytes_coppied);
         Ok(bytes_coppied)
         // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
         // let target_minimum_bytes = buf.len() + self.n;

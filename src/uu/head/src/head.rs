@@ -17,7 +17,7 @@ use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::{FromIo, UError, UResult};
 use uucore::line_ending::LineEnding;
-use uucore::lines::lines;
+//use uucore::lines::lines;
 use uucore::{format_usage, help_about, help_usage, show};
 
 const BUF_SIZE: usize = 65536;
@@ -37,10 +37,10 @@ mod options {
 
 mod parse;
 mod take;
-use take::take_all_but;
+//use take::take_all_but;
 use take::take_all_but2;
-use take::take_lines;
 use take::take_all_but_lines;
+use take::take_lines;
 
 #[derive(Error, Debug)]
 enum HeadError {
@@ -317,17 +317,13 @@ fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
     Ok(bytes_written)
 }
 
-fn read_but_last_n_lines(
-    mut input: impl Read,
-    n: u64,
-    separator: u8,
-) -> std::io::Result<u64> {
+fn read_but_last_n_lines(mut input: impl Read, n: u64, separator: u8) -> std::io::Result<u64> {
     if n == 0 {
         let stdout = std::io::stdout();
         let stdout = stdout.lock();
         let mut writer = std::io::BufWriter::with_capacity(BUF_SIZE, stdout);
 
-        return Ok(io::copy(&mut input, &mut writer)?);
+        return io::copy(&mut input, &mut writer);
     }
     let mut bytes_written: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
@@ -447,10 +443,7 @@ fn head_backwards_without_seek_file(
     //    let reader = std::io::BufReader::with_capacity(BUF_SIZE, &*input);
     match options.mode {
         Mode::AllButLastBytes(n) => read_but_last_n_bytes(input, n),
-        Mode::AllButLastLines(n) => read_but_last_n_lines(input,
-            n,
-            options.line_ending.into(),
-        ),
+        Mode::AllButLastLines(n) => read_but_last_n_lines(input, n, options.line_ending.into()),
         _ => unreachable!(),
     }
 }
