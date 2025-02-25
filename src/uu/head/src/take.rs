@@ -135,7 +135,6 @@ impl<R: Read> Read for TakeAllBut2<R> {
                 self.empty_buffers.push(self.buffers.pop_front().unwrap());
             }
         }
-
         Ok(bytes_coppied)
     }
 }
