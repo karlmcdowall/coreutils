@@ -98,7 +98,7 @@ impl<R: Read> TakeAllBut2<R> {
         W: Write,
     {
         let mut bytes_coppied = 0;
-        loop{
+        loop {
             // Try to buffer at least a full buffer of extra data.
             let target_minimum_buffered_bytes = TakeAllBuffer::buffer_size() + self.n;
             while self.buffered_bytes < target_minimum_buffered_bytes {
@@ -119,14 +119,14 @@ impl<R: Read> TakeAllBut2<R> {
             }
 
             // Since we have some data buffered, can assume we have 1 bufffer.
-            let mut front_buffer =  self.buffers.pop_front().unwrap();
+            let mut front_buffer = self.buffers.pop_front().unwrap();
             let excess_buffered_bytes = self.buffered_bytes - self.n;
             let bytes_to_write = excess_buffered_bytes.min(front_buffer.remaining_bytes());
             self.buffered_bytes -= bytes_to_write;
-            bytes_coppied+=bytes_to_write;
+            bytes_coppied += bytes_to_write;
             writer.write_all(front_buffer.consume(bytes_to_write))?;
             // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
-            if front_buffer.remaining_bytes()==0 {
+            if front_buffer.remaining_bytes() == 0 {
                 self.empty_buffers.push(front_buffer);
             } else {
                 self.buffers.push_front(front_buffer);

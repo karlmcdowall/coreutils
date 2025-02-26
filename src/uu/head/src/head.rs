@@ -291,7 +291,7 @@ fn catch_too_large_numbers_in_backwards_bytes_or_lines(n: u64) -> Option<usize> 
 }
 
 fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
-    let mut bytes_written : u64= 0;
+    let mut bytes_written: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
         let mut stdout = stdout.lock();
