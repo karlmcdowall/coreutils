@@ -295,7 +295,10 @@ fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
         let stdout = stdout.lock();
-        let mut writer = std::io::BufWriter::with_capacity(BUF_SIZE, stdout);
+        let stdout_raw_fd = stdout.as_raw_fd();
+        let mut stdout_file = unsafe { File::from_raw_fd(stdout_raw_fd) };
+
+        let mut writer = std::io::BufWriter::with_capacity(BUF_SIZE, stdout_file);
 
         let mut reader = take_all_but2(input, n);
 

@@ -7,6 +7,7 @@ use std::io::ErrorKind;
 use std::io::Read;
 
 use std::collections::VecDeque;
+use std::backtrace::Backtrace;
 
 use memchr::{memchr, memchr_iter};
 
@@ -96,6 +97,7 @@ impl<R: Read> TakeAllBut2<R> {
 
 impl<R: Read> Read for TakeAllBut2<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // eprintln!("{}", Backtrace::force_capture());
         // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
         let target_minimum_bytes = buf.len() + self.n;
         while self.buffered_bytes < target_minimum_bytes {
