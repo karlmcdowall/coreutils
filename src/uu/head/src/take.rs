@@ -5,9 +5,9 @@
 //! Take all but the last elements of an iterator.
 use std::io::ErrorKind;
 use std::io::Read;
+use std::io::Write;
 
 use std::collections::VecDeque;
-use std::backtrace::Backtrace;
 
 use memchr::{memchr, memchr_iter};
 
@@ -93,48 +93,43 @@ impl<R: Read> TakeAllBut2<R> {
             buffered_bytes: 0,
         }
     }
-}
-
-impl<R: Read> Read for TakeAllBut2<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // eprintln!("{}", Backtrace::force_capture());
-        // Try to buffer at least buf.len() + n bytes so we can fill the client buffer.
-        let target_minimum_bytes = buf.len() + self.n;
-        while self.buffered_bytes < target_minimum_bytes {
-            let mut new_buffer = self.empty_buffers.pop().unwrap_or_else(TakeAllBuffer::new);
-            let filled_bytes = new_buffer.fill_buffer(&mut self.inner)?;
-            self.buffers.push_back(new_buffer);
-            self.buffered_bytes += filled_bytes;
-            // Todo - add a method onto TakeAllBuffer for this...
-            if filled_bytes != TakeAllBuffer::buffer_size() {
-                // If we only managed a partial fill then we must be EOF -> break.
-                break;
-            }
-        }
-
-        // Now copy as many bytes as we can into buf.
+    pub fn write<W>(&mut self, writer: &mut W) -> std::io::Result<usize>
+    where
+        W: Write,
+    {
         let mut bytes_coppied = 0;
-        while bytes_coppied < buf.len() {
-            // If we've got <= n bytes buffered we must be done - break.
+        loop{
+            // Try to buffer at least a full buffer of extra data.
+            let target_minimum_buffered_bytes = TakeAllBuffer::buffer_size() + self.n;
+            while self.buffered_bytes < target_minimum_buffered_bytes {
+                let mut new_buffer = self.empty_buffers.pop().unwrap_or_else(TakeAllBuffer::new);
+                let filled_bytes = new_buffer.fill_buffer(&mut self.inner)?;
+                self.buffers.push_back(new_buffer);
+                self.buffered_bytes += filled_bytes;
+                // Todo - add a method onto TakeAllBuffer for this...
+                if filled_bytes != TakeAllBuffer::buffer_size() {
+                    // If we only managed a partial fill then we must be EOF -> break.
+                    break;
+                }
+            }
+
+            // If we've got <=n bytes buffered here we're done.
             if self.buffered_bytes <= self.n {
                 break;
             }
-            // Limit the number of bytes we want to copy so we don't drop bellow n-bytes buffered.
-            let max_bytes_to_copy = self.buffered_bytes - self.n;
-            assert!(max_bytes_to_copy > 0);
-            let bytes_remaining_to_copy = (buf.len() - bytes_coppied).min(max_bytes_to_copy);
-            let front_buffer = &mut self.buffers.front_mut().unwrap();
 
-            let bytes_to_copy_from_front_buffer =
-                front_buffer.remaining_bytes().min(bytes_remaining_to_copy);
-            let buffer_to_copy = front_buffer.consume(bytes_to_copy_from_front_buffer);
-            let target_slice =
-                &mut buf[bytes_coppied..(bytes_coppied + bytes_to_copy_from_front_buffer)];
-            target_slice.copy_from_slice(buffer_to_copy);
-            bytes_coppied += bytes_to_copy_from_front_buffer;
-            self.buffered_bytes -= bytes_coppied;
-            if front_buffer.remaining_bytes() == 0 {
-                self.empty_buffers.push(self.buffers.pop_front().unwrap());
+            // Since we have some data buffered, can assume we have 1 bufffer.
+            let mut front_buffer =  self.buffers.pop_front().unwrap();
+            let excess_buffered_bytes = self.buffered_bytes - self.n;
+            let bytes_to_write = excess_buffered_bytes.min(front_buffer.remaining_bytes());
+            self.buffered_bytes -= bytes_to_write;
+            bytes_coppied+=bytes_to_write;
+            writer.write_all(front_buffer.consume(bytes_to_write))?;
+            // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
+            if front_buffer.remaining_bytes()==0 {
+                self.empty_buffers.push(front_buffer);
+            } else {
+                self.buffers.push_front(front_buffer);
             }
         }
         Ok(bytes_coppied)
