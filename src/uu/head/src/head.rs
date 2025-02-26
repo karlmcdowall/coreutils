@@ -294,9 +294,12 @@ fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
     let mut bytes_written: u64 = 0;
     if let Some(n) = catch_too_large_numbers_in_backwards_bytes_or_lines(n) {
         let stdout = std::io::stdout();
-        let mut stdout = stdout.lock();
+        // let mut stdout = stdout.lock();
+        let stdout_raw_fd = stdout.as_raw_fd();
+        let mut stdout_file = unsafe { File::from_raw_fd(stdout_raw_fd) };
+
         let mut reader = take_all_but2(input, n);
-        bytes_written = (reader.write(&mut stdout)?).try_into().unwrap();
+        bytes_written = (reader.write(&mut stdout_file)?).try_into().unwrap();
 
         // Even though stdout is buffered, it will flush on each newline in the
         // input stream. This can be costly, so add an extra layer of buffering
@@ -309,7 +312,7 @@ fn read_but_last_n_bytes(input: impl Read, n: u64) -> std::io::Result<u64> {
         // Make sure we finish writing everything to the target before
         // exiting. Otherwise, when Rust is implicitly flushing, any
         // error will be silently ignored.
-        stdout.flush()?;
+        stdout_file.flush()?;
     }
     Ok(bytes_written)
 }
