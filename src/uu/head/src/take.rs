@@ -171,13 +171,23 @@ impl TakeAllLinesBuffer {
         Ok(valid_bytes)
     }
 
-    fn write(&mut self, writer: &mut impl Write, max_bytes: usize) -> std::io::Result<usize> {
-        let bytes_to_write = self.remaining_bytes().min(max_bytes);
-        assert!(bytes_to_write > 0);
-        let end_index = self.start_index + bytes_to_write;
-        writer.write_all(&self.buffer[self.start_index..end_index])?;
-        self.start_index = end_index;
-        Ok(bytes_to_write)
+    fn write(&mut self, writer: &mut impl Write, max_lines: usize) -> std::io::Result<usize> {
+        if max_lines <= self.lines {
+            // Write everything
+            writer.write_all(&self.buffer[self.start_index..])?;
+            let ret = Ok(self.lines);
+            self.start_index = self.buffer.len();
+            self.lines = 0;
+            return ret;
+        }
+        return Ok(0);
+
+        // let bytes_to_write = self.remaining_bytes().min(max_bytes);
+        // assert!(bytes_to_write > 0);
+        // let end_index = self.start_index + bytes_to_write;
+        // writer.write_all(&self.buffer[self.start_index..end_index])?;
+        // self.start_index = end_index;
+        // Ok(bytes_to_write)
     }
 
     fn remaining_bytes(&self) -> usize {
