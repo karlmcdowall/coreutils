@@ -27,11 +27,9 @@ impl TakeAllBuffer {
             start_index: 0,
         }
     }
-    fn fill_buffer<R>(&mut self, reader: &mut R) -> std::io::Result<usize>
-    where
-        R: Read,
+    fn fill_buffer(&mut self, reader: &mut impl Read) -> std::io::Result<usize>
     {
-        self.buffer.resize(Self::buffer_size(), 0);
+        self.buffer.resize(Self::max_buffer_size(), 0);
         let mut valid_bytes = 0;
         self.start_index = 0;
         loop {
@@ -50,20 +48,21 @@ impl TakeAllBuffer {
         Ok(valid_bytes)
     }
 
+    fn write(&mut self, writer: &mut impl Write, max_bytes: usize) -> std::io::Result<usize> {
+        let bytes_to_write = self.remaining_bytes().min(max_bytes);
+        assert!(bytes_to_write>0);
+        let end_index = self.start_index+ bytes_to_write;
+        writer.write_all(&self.buffer[self.start_index..end_index])?;
+        self.start_index=end_index;
+        Ok(bytes_to_write)
+    }
+
     fn remaining_bytes(&self) -> usize {
         self.buffer.len() - self.start_index
     }
 
-    const fn buffer_size() -> usize {
+    const fn max_buffer_size() -> usize {
         BUF_SIZE
-    }
-
-    fn consume(&mut self, n: usize) -> &[u8] {
-        let end_index = n + self.start_index;
-        assert!(end_index <= self.buffer.len());
-        let slice = &self.buffer[self.start_index..end_index];
-        self.start_index = end_index;
-        slice
     }
 }
 
@@ -100,14 +99,14 @@ impl<R: Read> TakeAllBut2<R> {
         let mut bytes_coppied = 0;
         loop {
             // Try to buffer at least a full buffer of extra data.
-            let target_minimum_buffered_bytes = TakeAllBuffer::buffer_size() + self.n;
+            let target_minimum_buffered_bytes = TakeAllBuffer::max_buffer_size() + self.n;
             while self.buffered_bytes < target_minimum_buffered_bytes {
                 let mut new_buffer = self.empty_buffers.pop().unwrap_or_else(TakeAllBuffer::new);
                 let filled_bytes = new_buffer.fill_buffer(&mut self.inner)?;
                 self.buffers.push_back(new_buffer);
                 self.buffered_bytes += filled_bytes;
                 // Todo - add a method onto TakeAllBuffer for this...
-                if filled_bytes != TakeAllBuffer::buffer_size() {
+                if filled_bytes != TakeAllBuffer::max_buffer_size() {
                     // If we only managed a partial fill then we must be EOF -> break.
                     break;
                 }
@@ -121,11 +120,9 @@ impl<R: Read> TakeAllBut2<R> {
             // Since we have some data buffered, can assume we have 1 bufffer.
             let mut front_buffer = self.buffers.pop_front().unwrap();
             let excess_buffered_bytes = self.buffered_bytes - self.n;
-            let bytes_to_write = excess_buffered_bytes.min(front_buffer.remaining_bytes());
-            self.buffered_bytes -= bytes_to_write;
-            bytes_coppied += bytes_to_write;
-            writer.write_all(front_buffer.consume(bytes_to_write))?;
-//            eprintln!("Wrote {bytes_to_write}");
+            let bytes_written = front_buffer.write(writer, excess_buffered_bytes)?;
+            self.buffered_bytes -= bytes_written;
+            bytes_coppied += bytes_written;
             // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
             if front_buffer.remaining_bytes() == 0 {
                 self.empty_buffers.push(front_buffer);
