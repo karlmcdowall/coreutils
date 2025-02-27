@@ -27,8 +27,7 @@ impl TakeAllBuffer {
             start_index: 0,
         }
     }
-    fn fill_buffer(&mut self, reader: &mut impl Read) -> std::io::Result<usize>
-    {
+    fn fill_buffer(&mut self, reader: &mut impl Read) -> std::io::Result<usize> {
         self.buffer.resize(Self::max_buffer_size(), 0);
         let mut valid_bytes = 0;
         self.start_index = 0;
@@ -50,10 +49,10 @@ impl TakeAllBuffer {
 
     fn write(&mut self, writer: &mut impl Write, max_bytes: usize) -> std::io::Result<usize> {
         let bytes_to_write = self.remaining_bytes().min(max_bytes);
-        assert!(bytes_to_write>0);
-        let end_index = self.start_index+ bytes_to_write;
+        assert!(bytes_to_write > 0);
+        let end_index = self.start_index + bytes_to_write;
         writer.write_all(&self.buffer[self.start_index..end_index])?;
-        self.start_index=end_index;
+        self.start_index = end_index;
         Ok(bytes_to_write)
     }
 
@@ -62,7 +61,7 @@ impl TakeAllBuffer {
     }
 
     fn is_empty(&self) -> bool {
-        self.remaining_bytes()==0
+        self.remaining_bytes() == 0
     }
 
     const fn max_buffer_size() -> usize {
@@ -96,8 +95,7 @@ impl<R: Read> TakeAllBut2<R> {
             buffered_bytes: 0,
         }
     }
-    pub fn write(&mut self, writer: &mut impl Write) -> std::io::Result<usize>
-    {
+    pub fn write(&mut self, writer: &mut impl Write) -> std::io::Result<usize> {
         let mut bytes_coppied = 0;
         loop {
             // Try to buffer at least a full buffer of extra data.
