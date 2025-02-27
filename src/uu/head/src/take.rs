@@ -61,6 +61,10 @@ impl TakeAllBuffer {
         self.buffer.len() - self.start_index
     }
 
+    fn is_empty(&self) -> bool {
+        self.remaining_bytes()==0
+    }
+
     const fn max_buffer_size() -> usize {
         BUF_SIZE
     }
@@ -92,9 +96,7 @@ impl<R: Read> TakeAllBut2<R> {
             buffered_bytes: 0,
         }
     }
-    pub fn write<W>(&mut self, writer: &mut W) -> std::io::Result<usize>
-    where
-        W: Write,
+    pub fn write(&mut self, writer: &mut impl Write) -> std::io::Result<usize>
     {
         let mut bytes_coppied = 0;
         loop {
@@ -124,7 +126,7 @@ impl<R: Read> TakeAllBut2<R> {
             self.buffered_bytes -= bytes_written;
             bytes_coppied += bytes_written;
             // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
-            if front_buffer.remaining_bytes() == 0 {
+            if front_buffer.is_empty() {
                 self.empty_buffers.push(front_buffer);
             } else {
                 self.buffers.push_front(front_buffer);
