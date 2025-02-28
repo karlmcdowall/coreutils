@@ -174,20 +174,22 @@ impl TakeAllLinesBuffer {
     fn write(&mut self, writer: &mut impl Write, max_lines: usize) -> std::io::Result<usize> {
         if max_lines <= self.lines {
             // Write everything
-            writer.write_all(&self.buffer[self.start_index..])?;
-            let ret = Ok(self.lines);
+            let buffer_to_write = &self.buffer[self.start_index..];
+            let bytes_written = buffer_to_write.len();
+            writer.write_all(buffer_to_write)?;
             self.start_index = self.buffer.len();
             self.lines = 0;
-            return ret;
+            return Ok(bytes_written);
         }
-        return Ok(0);
-
-        // let bytes_to_write = self.remaining_bytes().min(max_bytes);
-        // assert!(bytes_to_write > 0);
-        // let end_index = self.start_index + bytes_to_write;
-        // writer.write_all(&self.buffer[self.start_index..end_index])?;
-        // self.start_index = end_index;
-        // Ok(bytes_to_write)
+        //
+        let index = memchr_iter(self.separator, &self.buffer[self.start_index..]).nth(max_lines).unwrap();
+        let byte_after_index = index+1;
+        let buffer_to_write = &self.buffer[self.start_index..byte_after_index];
+        let bytes_written = buffer_to_write.len();
+        writer.write_all(buffer_to_write)?;
+        self.start_index = byte_after_index;
+        self.lines -= max_lines;
+        Ok(bytes_written)
     }
 
     fn remaining_bytes(&self) -> usize {
@@ -258,18 +260,19 @@ impl<R: Read> TakeAllLinesBut<R> {
                 break;
             }
 
-            // // Since we have some data buffered, can assume we have 1 bufffer.
-            // let mut front_buffer = self.buffers.pop_front().unwrap();
-            // let excess_buffered_bytes = self.buffered_bytes - self.n;
-            // let bytes_written = front_buffer.write(writer, excess_buffered_bytes)?;
-            // self.buffered_bytes -= bytes_written;
-            // bytes_coppied += bytes_written;
-            // // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
-            // if front_buffer.is_empty() {
-            //     self.empty_buffers.push(front_buffer);
-            // } else {
-            //     self.buffers.push_front(front_buffer);
-            // }
+            // Since we have some data buffered, can assume we have 1 bufffer.
+            let mut front_buffer = self.buffers.pop_front().unwrap();
+            let excess_buffered_lines = self.buffered_lines - self.n;
+            self.buffered_lines -= front_buffer.lines();
+            let bytes_written = front_buffer.write(writer, excess_buffered_lines)?;
+            self.buffered_lines += front_buffer.lines();
+            bytes_coppied += bytes_written;
+            // If the front buffer is empty (which it probably is), push it into the empty-buffer-pool.
+            if front_buffer.is_empty() {
+                self.empty_buffers.push(front_buffer);
+            } else {
+                self.buffers.push_front(front_buffer);
+            }
         }
         Ok(bytes_coppied)
     }
