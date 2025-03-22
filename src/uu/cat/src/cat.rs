@@ -4,6 +4,7 @@
 // file that was distributed with this source code.
 
 // spell-checker:ignore (ToDO) nonprint nonblank nonprinting ELOOP
+use memchr::{memchr2, memchr3};
 use std::fs::{metadata, File};
 use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 /// Unix domain socket support
@@ -64,6 +65,36 @@ enum NumberingMode {
     All,
 }
 
+#[derive(PartialEq)]
+enum ShowLineEnds {
+    True,
+    False,
+}
+
+impl ShowLineEnds {
+    const fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            ShowLineEnds::True => "$\n".as_bytes(),
+            ShowLineEnds::False => "\n".as_bytes(),
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum ShowTabs {
+    True,
+    False,
+}
+
+impl ShowTabs {
+    const fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            ShowTabs::True => "^I".as_bytes(),
+            ShowTabs::False => "\t".as_bytes(),
+        }
+    }
+}
+
 struct OutputOptions {
     /// Line numbering mode
     number: NumberingMode,
@@ -72,38 +103,22 @@ struct OutputOptions {
     squeeze_blank: bool,
 
     /// display TAB characters as `tab`
-    show_tabs: bool,
+    show_tabs: ShowTabs,
 
     /// Show end of lines
-    show_ends: bool,
+    show_ends: ShowLineEnds,
 
     /// use ^ and M- notation, except for LF (\\n) and TAB (\\t)
     show_nonprint: bool,
 }
 
 impl OutputOptions {
-    fn tab(&self) -> &'static str {
-        if self.show_tabs {
-            "^I"
-        } else {
-            "\t"
-        }
-    }
-
-    fn end_of_line(&self) -> &'static str {
-        if self.show_ends {
-            "$\n"
-        } else {
-            "\n"
-        }
-    }
-
     /// We can write fast if we can simply copy the contents of the file to
     /// stdout, without augmenting the output with e.g. line numbers.
     fn can_write_fast(&self) -> bool {
-        !(self.show_tabs
+        !((self.show_tabs == ShowTabs::True)
             || self.show_nonprint
-            || self.show_ends
+            || (self.show_ends == ShowLineEnds::True)
             || self.squeeze_blank
             || self.number != NumberingMode::None)
     }
@@ -195,21 +210,28 @@ pub fn uumain(args: impl uucore::Args) -> UResult<()> {
     .iter()
     .any(|v| matches.get_flag(v));
 
-    let show_ends = [
+    let show_ends = match [
         options::SHOW_ENDS.to_owned(),
         options::SHOW_ALL.to_owned(),
         options::SHOW_NONPRINTING_ENDS.to_owned(),
     ]
     .iter()
-    .any(|v| matches.get_flag(v));
+    .any(|v| matches.get_flag(v))
+    {
+        true => ShowLineEnds::True,
+        false => ShowLineEnds::False,
+    };
 
-    let show_tabs = [
+    let show_tabs = match [
         options::SHOW_ALL.to_owned(),
         options::SHOW_TABS.to_owned(),
         options::SHOW_NONPRINTING_TABS.to_owned(),
     ]
     .iter()
-    .any(|v| matches.get_flag(v));
+    .any(|v| matches.get_flag(v)) {
+        true => ShowTabs::True,
+        false => ShowTabs::False,
+    };
 
     let squeeze_blank = matches.get_flag(options::SQUEEZE_BLANK);
     let files: Vec<String> = match matches.get_many::<String>(options::FILE) {
@@ -555,7 +577,7 @@ fn write_lines<R: FdReadable>(
                         // print suitable end of line
                         write_end_of_line(
                             &mut writer,
-                            options.end_of_line().as_bytes(),
+                            options.show_ends.as_bytes(),
                             handle.is_interactive,
                         )?;
                         state.at_line_start = true;
@@ -587,31 +609,29 @@ fn write_new_line<W: Write>(
     is_interactive: bool,
 ) -> CatResult<()> {
     if state.skipped_carriage_return {
-        if options.show_ends {
+        if options.show_ends == ShowLineEnds::True {
             writer.write_all(b"^M")?;
         } else {
             writer.write_all(b"\r")?;
         }
         state.skipped_carriage_return = false;
 
-        write_end_of_line(writer, options.end_of_line().as_bytes(), is_interactive)?;
-        return Ok(());
-    }
-    if !state.at_line_start || !options.squeeze_blank || !state.one_blank_kept {
+        write_end_of_line(writer, options.show_ends.as_bytes(), is_interactive)?;
+    } else if !state.at_line_start || !options.squeeze_blank || !state.one_blank_kept {
         state.one_blank_kept = true;
         if state.at_line_start && options.number == NumberingMode::All {
             write!(writer, "{0:6}\t", state.line_number)?;
             state.line_number += 1;
         }
-        write_end_of_line(writer, options.end_of_line().as_bytes(), is_interactive)?;
+        write_end_of_line(writer, options.show_ends.as_bytes(), is_interactive)?;
     }
     Ok(())
 }
 
 fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -> usize {
     if options.show_nonprint {
-        write_nonprint_to_end(in_buf, writer, options.tab().as_bytes())
-    } else if options.show_tabs {
+        write_nonprint_to_end(in_buf, writer, options.show_tabs.as_bytes())
+    } else if options.show_tabs == ShowTabs::True {
         write_tab_to_end(in_buf, writer)
     } else {
         write_to_end(in_buf, writer)
@@ -624,7 +644,8 @@ fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -
 // however, write_nonprint_to_end doesn't need to stop at \r because it will always write \r as ^M.
 // Return the number of written symbols
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
-    match in_buf.iter().position(|c| *c == b'\n' || *c == b'\r') {
+    //    match in_buf.iter().position(|c| *c == b'\n' || *c == b'\r') {
+    match memchr2(b'\n', b'\r', &in_buf) {
         Some(p) => {
             writer.write_all(&in_buf[..p]).unwrap();
             p
@@ -639,10 +660,10 @@ fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
 fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
     let mut count = 0;
     loop {
-        match in_buf
-            .iter()
-            .position(|c| *c == b'\n' || *c == b'\t' || *c == b'\r')
-        {
+        // match in_buf
+        //     .iter()
+        //     .position(|c| *c == b'\n' || *c == b'\t' || *c == b'\r')
+        match memchr3(b'\n', b'\t', b'\r', &in_buf) {
             Some(p) => {
                 writer.write_all(&in_buf[..p]).unwrap();
                 if in_buf[p] == b'\t' {

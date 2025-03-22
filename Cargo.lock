@@ -2538,6 +2538,7 @@ name = "uu_cat"
 version = "0.0.30"
 dependencies = [
  "clap",
+ "memchr",
  "nix",
  "thiserror 2.0.12",
  "uucore",
