@@ -5,7 +5,7 @@
 
 // spell-checker:ignore (ToDO) nonprint nonblank nonprinting ELOOP
 use std::fs::{metadata, File};
-use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 /// Unix domain socket support
 #[cfg(unix)]
 use std::net::Shutdown;
@@ -515,61 +515,65 @@ fn write_lines<R: FdReadable>(
     // Add a 32K buffer for stdout - this greatly improves performance.
     let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
 
-    while let Ok(n) = handle.reader.read(&mut in_buf) {
-        if n == 0 {
-            break;
-        }
-        let in_buf = &in_buf[..n];
-        let mut pos = 0;
-        while pos < n {
-            // skip empty line_number enumerating them if needed
-            if in_buf[pos] == b'\n' {
-                write_new_line(&mut writer, options, state, handle.is_interactive)?;
-                state.at_line_start = true;
-                pos += 1;
-                continue;
-            }
-            if state.skipped_carriage_return {
-                writer.write_all(b"\r")?;
-                state.skipped_carriage_return = false;
-                state.at_line_start = false;
-            }
-            state.one_blank_kept = false;
-            if state.at_line_start && options.number != NumberingMode::None {
-                write!(writer, "{0:6}\t", state.line_number)?;
-                state.line_number += 1;
-            }
+    loop {
+        match handle.reader.read(&mut in_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let in_buf = &in_buf[..n];
+                let mut pos = 0;
+                while pos < n {
+                    // skip empty line_number enumerating them if needed
+                    if in_buf[pos] == b'\n' {
+                        write_new_line(&mut writer, options, state, handle.is_interactive)?;
+                        state.at_line_start = true;
+                        pos += 1;
+                        continue;
+                    }
+                    if state.skipped_carriage_return {
+                        writer.write_all(b"\r")?;
+                        state.skipped_carriage_return = false;
+                        state.at_line_start = false;
+                    }
+                    state.one_blank_kept = false;
+                    if state.at_line_start && options.number != NumberingMode::None {
+                        write!(writer, "{0:6}\t", state.line_number)?;
+                        state.line_number += 1;
+                    }
 
-            // print to end of line or end of buffer
-            let offset = write_end(&mut writer, &in_buf[pos..], options);
+                    // print to end of line or end of buffer
+                    let offset = write_end(&mut writer, &in_buf[pos..], options);
 
-            // end of buffer?
-            if offset + pos == in_buf.len() {
-                state.at_line_start = false;
-                break;
+                    // end of buffer?
+                    if offset + pos == in_buf.len() {
+                        state.at_line_start = false;
+                        break;
+                    }
+                    if in_buf[pos + offset] == b'\r' {
+                        state.skipped_carriage_return = true;
+                    } else {
+                        assert_eq!(in_buf[pos + offset], b'\n');
+                        // print suitable end of line
+                        write_end_of_line(
+                            &mut writer,
+                            options.end_of_line().as_bytes(),
+                            handle.is_interactive,
+                        )?;
+                        state.at_line_start = true;
+                    }
+                    pos += offset + 1;
+                }
+                // We need to flush the buffer each time around the loop in order to pass GNU tests.
+                // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+                // of this loop will block (indefinitely) whist waiting for more data. The expectation
+                // however is that anything that's ready for output should show up in the meantime,
+                // and not be buffered internally to the `cat` process.
+                // Hence it's necessary to flush our buffer before every time we could potentially block
+                // on a `std::io::Read::read` call.
+                writer.flush()?;
             }
-            if in_buf[pos + offset] == b'\r' {
-                state.skipped_carriage_return = true;
-            } else {
-                assert_eq!(in_buf[pos + offset], b'\n');
-                // print suitable end of line
-                write_end_of_line(
-                    &mut writer,
-                    options.end_of_line().as_bytes(),
-                    handle.is_interactive,
-                )?;
-                state.at_line_start = true;
-            }
-            pos += offset + 1;
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(CatError::Io(e)),
         }
-        // We need to flush the buffer each time around the loop in order to pass GNU tests.
-        // When we are reading the input from a pipe, the `handle.reader.read` call at the top
-        // of this loop will block (indefinitely) whist waiting for more data. The expectation
-        // however is that anything that's ready for output should show up in the meantime,
-        // and not be buffered internally to the `cat` process.
-        // Hence it's necessary to flush our buffer before every time we could potentially block
-        // on a `std::io::Read::read` call.
-        writer.flush()?;
     }
 
     Ok(())
