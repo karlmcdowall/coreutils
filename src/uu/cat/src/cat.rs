@@ -607,7 +607,7 @@ fn write_new_line<W: Write>(
     options: &OutputOptions,
     state: &mut OutputState,
     is_interactive: bool,
-) -> CatResult<()> {
+) -> std::io::Result<()> {
     if state.skipped_carriage_return {
         if options.show_ends == ShowLineEnds::True {
             writer.write_all(b"^M")?;
@@ -708,7 +708,7 @@ fn write_end_of_line<W: Write>(
     writer: &mut W,
     end_of_line: &[u8],
     is_interactive: bool,
-) -> CatResult<()> {
+) -> -> std::io::Result<())> {
     writer.write_all(end_of_line)?;
     if is_interactive {
         writer.flush()?;
