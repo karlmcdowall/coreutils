@@ -339,9 +339,9 @@ fn cat_handle<R: FdReadable>(
     state: &mut OutputState,
 ) -> CatResult<()> {
     if options.can_write_fast() {
-        write_fast(handle)
+        Ok(write_fast(handle)?)
     } else {
-        write_lines(handle, options, state)
+        Ok(write_lines(handle, options, state)?)
     }
 }
 
@@ -494,7 +494,7 @@ fn get_input_type(path: &str) -> CatResult<InputType> {
 
 /// Writes handle to stdout with no configuration. This allows a
 /// simple memory copy.
-fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
+fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> std::io::Result<()>  {
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -530,7 +530,7 @@ fn write_lines<R: FdReadable>(
     handle: &mut InputHandle<R>,
     options: &OutputOptions,
     state: &mut OutputState,
-) -> CatResult<()> {
+) -> std::io::Result<()> {
     let mut in_buf = [0; 1024 * 31];
     let stdout = io::stdout();
     let stdout = stdout.lock();
@@ -594,7 +594,7 @@ fn write_lines<R: FdReadable>(
                 writer.flush()?;
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) => return Err(CatError::Io(e)),
+            Err(e) => return Err(e),
         }
     }
 
@@ -708,7 +708,7 @@ fn write_end_of_line<W: Write>(
     writer: &mut W,
     end_of_line: &[u8],
     is_interactive: bool,
-) -> -> std::io::Result<())> {
+) -> std::io::Result<()> {
     writer.write_all(end_of_line)?;
     if is_interactive {
         writer.flush()?;

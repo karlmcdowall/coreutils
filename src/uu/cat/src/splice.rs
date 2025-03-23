@@ -26,7 +26,7 @@ const BUF_SIZE: usize = 1024 * 16;
 pub(super) fn write_fast_using_splice<R: FdReadable, S: AsRawFd + AsFd>(
     handle: &InputHandle<R>,
     write_fd: &S,
-) -> CatResult<bool> {
+) -> std::io::Result<bool>  {
     let (pipe_rd, pipe_wr) = pipe()?;
 
     loop {
