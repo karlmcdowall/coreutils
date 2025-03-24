@@ -685,22 +685,33 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W)  -> std::io::Re
 
 fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> std::io::Result<usize>  {
     let mut count = 0;
+    let mut start_offset = 0;
 
-    for byte in in_buf.iter().copied() {
+    for offset in 0..in_buf.len() {
+        let byte = in_buf[offset];
+        if (32..=126).contains(&byte) {
+            count += 1;
+            continue;
+        }
+        // Write out everything up to this point.
+        writer.write_all(&in_buf[start_offset..offset])?;
         if byte == b'\n' {
+            start_offset = in_buf.len();
             break;
         }
         match byte {
             9 => writer.write_all(tab),
             0..=8 | 10..=31 => writer.write_all(&[b'^', byte + 64]),
-            32..=126 => writer.write_all(&[byte]),
+            32..=126 => unreachable!(),
             127 => writer.write_all(b"^?"),
             128..=159 => writer.write_all(&[b'M', b'-', b'^', byte - 64]),
             160..=254 => writer.write_all(&[b'M', b'-', byte - 128]),
             _ => writer.write_all(b"M-^?"),
         }?;
+        start_offset = offset + 1;
         count += 1;
     }
+    writer.write_all(&in_buf[start_offset..])?;
     Ok(count)
 }
 
