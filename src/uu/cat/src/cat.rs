@@ -4,6 +4,7 @@
 // file that was distributed with this source code.
 
 // spell-checker:ignore (ToDO) nonprint nonblank nonprinting ELOOP
+use memchr::{memchr2, memchr3};
 use std::fs::{File, metadata};
 use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
 /// Unix domain socket support
@@ -616,7 +617,7 @@ fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -
 // however, write_nonprint_to_end doesn't need to stop at \r because it will always write \r as ^M.
 // Return the number of written symbols
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
-    match in_buf.iter().position(|c| *c == b'\n' || *c == b'\r') {
+    match memchr2(b'\n', b'\r', &in_buf) {
         Some(p) => {
             writer.write_all(&in_buf[..p]).unwrap();
             p
@@ -631,10 +632,7 @@ fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
 fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
     let mut count = 0;
     loop {
-        match in_buf
-            .iter()
-            .position(|c| *c == b'\n' || *c == b'\t' || *c == b'\r')
-        {
+        match memchr3(b'\n', b'\t', b'\r', &in_buf) {
             Some(p) => {
                 writer.write_all(&in_buf[..p]).unwrap();
                 if in_buf[p] == b'\t' {
