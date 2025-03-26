@@ -495,6 +495,36 @@ fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
     Ok(())
 }
 
+fn write_chunks<R: FdReadable,
+    const SHOW_TABS: bool,>(
+    handle: &mut InputHandle<R>,
+)    -> CatResult<()> {
+    let mut in_buf = [0; 1024 * 31];
+    let stdout = io::stdout();
+    let stdout = stdout.lock();
+    // Add a 32K buffer for stdout - this greatly improves performance.
+    let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
+
+    loop {
+        match handle.reader.read(&mut in_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(CatError::Io(e)),
+        }
+        // We need to flush the buffer each time around the loop in order to pass GNU tests.
+        // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+        // of this loop will block (indefinitely) whist waiting for more data. The expectation
+        // however is that anything that's ready for output should show up in the meantime,
+        // and not be buffered internally to the `cat` process.
+        // Hence it's necessary to flush our buffer before every time we could potentially block
+        // on a `std::io::Read::read` call.
+        writer.flush()?;
+    }
+    Ok(())
+}
+
 /// Outputs file contents to stdout in a line-by-line fashion,
 /// propagating any errors that might occur.
 fn write_lines<R: FdReadable>(
