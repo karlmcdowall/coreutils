@@ -4,9 +4,9 @@
 // file that was distributed with this source code.
 
 // spell-checker:ignore (ToDO) nonprint nonblank nonprinting ELOOP
-use memchr::{memchr2, memchr3};
+use memchr::{memchr_iter, memchr2, memchr3};
 use std::fs::{File, metadata};
-use std::io::{self, BufWriter, ErrorKind, IsTerminal, Read, Write};
+use std::io::{self, BufWriter, ErrorKind, Read, Write};
 /// Unix domain socket support
 #[cfg(unix)]
 use std::net::Shutdown;
@@ -119,20 +119,14 @@ struct OutputState {
 }
 
 #[cfg(unix)]
-trait FdReadable: Read + AsFd + AsRawFd {}
+trait FdReadable: Read + AsFd {}
 #[cfg(not(unix))]
 trait FdReadable: Read {}
 
 #[cfg(unix)]
-impl<T> FdReadable for T where T: Read + AsFd + AsRawFd {}
+impl<T> FdReadable for T where T: Read + AsFd {}
 #[cfg(not(unix))]
 impl<T> FdReadable for T where T: Read {}
-
-/// Represents an open file handle, stream, or other device
-struct InputHandle<R: FdReadable> {
-    reader: R,
-    is_interactive: bool,
-}
 
 /// Concrete enum of recognized file types.
 ///
@@ -305,12 +299,26 @@ pub fn uu_app() -> Command {
 }
 
 fn cat_handle<R: FdReadable>(
-    handle: &mut InputHandle<R>,
+    handle: &mut R,
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
     if options.can_write_fast() {
         write_fast(handle)
+    } else if options.number == NumberingMode::None
+        && !options.squeeze_blank
+        && options.show_tabs
+        && !options.show_ends
+        && !options.show_nonprint
+    {
+        write_chunks::<_, true, false>(handle)
+    } else if options.number == NumberingMode::None
+        && !options.squeeze_blank
+        && !options.show_tabs
+        && options.show_ends
+        && !options.show_nonprint
+    {
+        write_chunks::<_, false, true>(handle)
     } else {
         write_lines(handle, options, state)
     }
@@ -342,32 +350,24 @@ fn cat_path(
 ) -> CatResult<()> {
     match get_input_type(path)? {
         InputType::StdIn => {
-            let stdin = io::stdin();
+            let mut stdin = io::stdin();
             let in_info = FileInformation::from_file(&stdin)?;
-            let mut handle = InputHandle {
-                reader: stdin,
-                is_interactive: std::io::stdin().is_terminal(),
-            };
             if let Some(out_info) = out_info {
                 if in_info == *out_info && is_appending() {
                     return Err(CatError::OutputIsInput);
                 }
             }
-            cat_handle(&mut handle, options, state)
+            cat_handle(&mut stdin, options, state)
         }
         InputType::Directory => Err(CatError::IsDirectory),
         #[cfg(unix)]
         InputType::Socket => {
-            let socket = UnixStream::connect(path)?;
+            let mut socket = UnixStream::connect(path)?;
             socket.shutdown(Shutdown::Write)?;
-            let mut handle = InputHandle {
-                reader: socket,
-                is_interactive: false,
-            };
-            cat_handle(&mut handle, options, state)
+            cat_handle(&mut socket, options, state)
         }
         _ => {
-            let file = File::open(path)?;
+            let mut file = File::open(path)?;
 
             if let Some(out_info) = out_info {
                 if out_info.file_size() != 0
@@ -376,12 +376,7 @@ fn cat_path(
                     return Err(CatError::OutputIsInput);
                 }
             }
-
-            let mut handle = InputHandle {
-                reader: file,
-                is_interactive: false,
-            };
-            cat_handle(&mut handle, options, state)
+            cat_handle(&mut file, options, state)
         }
     }
 }
@@ -465,7 +460,7 @@ fn get_input_type(path: &str) -> CatResult<InputType> {
 
 /// Writes handle to stdout with no configuration. This allows a
 /// simple memory copy.
-fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
+fn write_fast<R: FdReadable>(handle: &mut R) -> CatResult<()> {
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -479,7 +474,7 @@ fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
     // If we're not on Linux or Android, or the splice() call failed,
     // fall back on slower writing.
     let mut buf = [0; 1024 * 64];
-    while let Ok(n) = handle.reader.read(&mut buf) {
+    while let Ok(n) = handle.read(&mut buf) {
         if n == 0 {
             break;
         }
@@ -495,10 +490,9 @@ fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
     Ok(())
 }
 
-fn write_chunks<R: FdReadable,
-    const SHOW_TABS: bool,>(
-    handle: &mut InputHandle<R>,
-)    -> CatResult<()> {
+fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
+    handle: &mut R,
+) -> CatResult<()> {
     let mut in_buf = [0; 1024 * 31];
     let stdout = io::stdout();
     let stdout = stdout.lock();
@@ -506,15 +500,33 @@ fn write_chunks<R: FdReadable,
     let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
 
     loop {
-        match handle.reader.read(&mut in_buf) {
+        match handle.read(&mut in_buf) {
             Ok(0) => break,
             Ok(n) => {
+                if SHOW_TABS && !SHOW_ENDS {
+                    let mut start_offset = 0;
+                    for offset in memchr_iter(b'\t', &in_buf[..n]) {
+                        writer.write_all(&in_buf[start_offset..offset])?;
+                        writer.write_all(b"^I")?;
+                        start_offset = offset + 1;
+                    }
+                    writer.write_all(&in_buf[start_offset..n])?;
+                }
+                if !SHOW_TABS && SHOW_ENDS {
+                    let mut start_offset = 0;
+                    for offset in memchr_iter(b'\n', &in_buf[..n]) {
+                        writer.write_all(&in_buf[start_offset..offset])?;
+                        writer.write_all(b"$\n")?;
+                        start_offset = offset + 1;
+                    }
+                    writer.write_all(&in_buf[start_offset..n])?;
+                }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => return Err(CatError::Io(e)),
         }
         // We need to flush the buffer each time around the loop in order to pass GNU tests.
-        // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+        // When we are reading the input from a pipe, the `handle.read` call at the top
         // of this loop will block (indefinitely) whist waiting for more data. The expectation
         // however is that anything that's ready for output should show up in the meantime,
         // and not be buffered internally to the `cat` process.
@@ -528,7 +540,7 @@ fn write_chunks<R: FdReadable,
 /// Outputs file contents to stdout in a line-by-line fashion,
 /// propagating any errors that might occur.
 fn write_lines<R: FdReadable>(
-    handle: &mut InputHandle<R>,
+    handle: &mut R,
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
@@ -539,7 +551,7 @@ fn write_lines<R: FdReadable>(
     let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
 
     loop {
-        match handle.reader.read(&mut in_buf) {
+        match handle.read(&mut in_buf) {
             Ok(0) => break,
             Ok(n) => {
                 let in_buf = &in_buf[..n];
@@ -547,7 +559,7 @@ fn write_lines<R: FdReadable>(
                 while pos < n {
                     // skip empty line_number enumerating them if needed
                     if in_buf[pos] == b'\n' {
-                        write_new_line(&mut writer, options, state, handle.is_interactive)?;
+                        write_new_line(&mut writer, options, state)?;
                         state.at_line_start = true;
                         pos += 1;
                         continue;
@@ -576,17 +588,13 @@ fn write_lines<R: FdReadable>(
                     } else {
                         assert_eq!(in_buf[pos + offset], b'\n');
                         // print suitable end of line
-                        write_end_of_line(
-                            &mut writer,
-                            options.end_of_line().as_bytes(),
-                            handle.is_interactive,
-                        )?;
+                        writer.write_all(options.end_of_line().as_bytes())?;
                         state.at_line_start = true;
                     }
                     pos += offset + 1;
                 }
                 // We need to flush the buffer each time around the loop in order to pass GNU tests.
-                // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+                // When we are reading the input from a pipe, the `handle.read` call at the top
                 // of this loop will block (indefinitely) whist waiting for more data. The expectation
                 // however is that anything that's ready for output should show up in the meantime,
                 // and not be buffered internally to the `cat` process.
@@ -607,7 +615,6 @@ fn write_new_line<W: Write>(
     writer: &mut W,
     options: &OutputOptions,
     state: &mut OutputState,
-    is_interactive: bool,
 ) -> CatResult<()> {
     if state.skipped_carriage_return {
         if options.show_ends {
@@ -617,7 +624,7 @@ fn write_new_line<W: Write>(
         }
         state.skipped_carriage_return = false;
 
-        write_end_of_line(writer, options.end_of_line().as_bytes(), is_interactive)?;
+        writer.write_all(options.end_of_line().as_bytes())?;
         return Ok(());
     }
     if !state.at_line_start || !options.squeeze_blank || !state.one_blank_kept {
@@ -626,7 +633,7 @@ fn write_new_line<W: Write>(
             write!(writer, "{0:6}\t", state.line_number)?;
             state.line_number += 1;
         }
-        write_end_of_line(writer, options.end_of_line().as_bytes(), is_interactive)?;
+        writer.write_all(options.end_of_line().as_bytes())?;
     }
     Ok(())
 }
@@ -702,18 +709,6 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
         count += 1;
     }
     count
-}
-
-fn write_end_of_line<W: Write>(
-    writer: &mut W,
-    end_of_line: &[u8],
-    is_interactive: bool,
-) -> CatResult<()> {
-    writer.write_all(end_of_line)?;
-    if is_interactive {
-        writer.flush()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

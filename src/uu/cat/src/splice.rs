@@ -2,7 +2,7 @@
 //
 // For the full copyright and license information, please view the LICENSE
 // file that was distributed with this source code.
-use super::{CatResult, FdReadable, InputHandle};
+use super::{CatResult, FdReadable};
 
 use nix::unistd;
 use std::os::{
@@ -24,13 +24,13 @@ const BUF_SIZE: usize = 1024 * 16;
 /// copying or not. False means we don't have to.
 #[inline]
 pub(super) fn write_fast_using_splice<R: FdReadable, S: AsRawFd + AsFd>(
-    handle: &InputHandle<R>,
+    handle: &R,
     write_fd: &S,
 ) -> CatResult<bool> {
     let (pipe_rd, pipe_wr) = pipe()?;
 
     loop {
-        match splice(&handle.reader, &pipe_wr, SPLICE_SIZE) {
+        match splice(&handle, &pipe_wr, SPLICE_SIZE) {
             Ok(n) => {
                 if n == 0 {
                     return Ok(false);
