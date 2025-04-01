@@ -1,4 +1,5 @@
 UseGNU=gmake $*
+
 all:
 	@$(UseGNU)
 .DEFAULT:

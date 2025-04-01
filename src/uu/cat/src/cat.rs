@@ -4,7 +4,7 @@
 // file that was distributed with this source code.
 
 // spell-checker:ignore (ToDO) nonprint nonblank nonprinting ELOOP
-use memchr::{memchr_iter, memchr2, memchr3};
+use memchr::{memchr_iter, memchr2, memchr2_iter, memchr3, memchr3_iter};
 use std::fs::{File, metadata};
 use std::io::{self, BufWriter, ErrorKind, Read, Write};
 /// Unix domain socket support
@@ -319,6 +319,13 @@ fn cat_handle<R: FdReadable>(
         && !options.show_nonprint
     {
         write_chunks::<_, false, true>(handle)
+    } else if options.number == NumberingMode::None
+        && !options.squeeze_blank
+        && options.show_tabs
+        && options.show_ends
+        && !options.show_nonprint
+    {
+        write_chunks::<_, true, true>(handle)
     } else {
         write_lines(handle, options, state)
     }
@@ -490,6 +497,23 @@ fn write_fast<R: FdReadable>(handle: &mut R) -> CatResult<()> {
     Ok(())
 }
 
+#[derive(PartialEq)]
+enum CrOffset {
+    None,
+    Some(usize),
+    EndOfPreviousBuffer,
+}
+
+impl CrOffset {
+    fn cr_lf_detected(&self, lr_offset: usize) -> bool {
+        match self {
+            CrOffset::None => false,
+            CrOffset::Some(cr_offset) => cr_offset + 1 == lr_offset,
+            CrOffset::EndOfPreviousBuffer => lr_offset == 0,
+        }
+    }
+}
+
 fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
     handle: &mut R,
 ) -> CatResult<()> {
@@ -498,10 +522,16 @@ fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
     let stdout = stdout.lock();
     // Add a 32K buffer for stdout - this greatly improves performance.
     let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
+    let mut cr_offset = CrOffset::None;
 
     loop {
         match handle.read(&mut in_buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                if cr_offset == CrOffset::EndOfPreviousBuffer {
+                    writer.write_all(b"\r")?;
+                }
+                break;
+            }
             Ok(n) => {
                 if SHOW_TABS && !SHOW_ENDS {
                     let mut start_offset = 0;
@@ -514,12 +544,69 @@ fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
                 }
                 if !SHOW_TABS && SHOW_ENDS {
                     let mut start_offset = 0;
-                    for offset in memchr_iter(b'\n', &in_buf[..n]) {
-                        writer.write_all(&in_buf[start_offset..offset])?;
-                        writer.write_all(b"$\n")?;
-                        start_offset = offset + 1;
+                    for offset in memchr2_iter(b'\n', b'\r', &in_buf[..n]) {
+                        if in_buf[offset] == b'\n' {
+                            let lf_offset = offset;
+                            if cr_offset.cr_lf_detected(lf_offset) {
+                                if lf_offset != 0 {
+                                    writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
+                                }
+                                writer.write_all(b"^M$\n")?;
+                            } else {
+                                // We have \n
+                                writer.write_all(&in_buf[start_offset..lf_offset])?;
+                                writer.write_all(b"$\n")?;
+                            }
+                            start_offset = lf_offset + 1;
+                        } else {
+                            assert_eq!(in_buf[offset], b'\r');
+                            cr_offset = CrOffset::Some(offset);
+                        }
                     }
-                    writer.write_all(&in_buf[start_offset..n])?;
+                    // Reached the end of the buffer. Check if the last character is \r and handle appropriately.
+                    assert!(n > 0);
+                    if in_buf[n - 1] == b'\r' {
+                        cr_offset = CrOffset::EndOfPreviousBuffer;
+                        writer.write_all(&in_buf[start_offset..n - 1])?;
+                    } else {
+                        cr_offset = CrOffset::None;
+                        writer.write_all(&in_buf[start_offset..n])?;
+                    }
+                }
+                if SHOW_TABS && SHOW_ENDS {
+                    let mut start_offset = 0;
+                    for offset in memchr3_iter(b'\n', b'\r', b'\t', &in_buf[..n]) {
+                        if in_buf[offset] == b'\t' {
+                            writer.write_all(&in_buf[start_offset..offset])?;
+                            writer.write_all(b"^I")?;
+                            start_offset = offset + 1;
+                        } else if in_buf[offset] == b'\n' {
+                            let lf_offset = offset;
+                            if cr_offset.cr_lf_detected(lf_offset) {
+                                if lf_offset != 0 {
+                                    writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
+                                }
+                                writer.write_all(b"^M$\n")?;
+                            } else {
+                                // We have \n
+                                writer.write_all(&in_buf[start_offset..lf_offset])?;
+                                writer.write_all(b"$\n")?;
+                            }
+                            start_offset = lf_offset + 1;
+                        } else {
+                            assert_eq!(in_buf[offset], b'\r');
+                            cr_offset = CrOffset::Some(offset);
+                        }
+                    }
+                    // Reached the end of the buffer. Check if the last character is \r and handle appropriately.
+                    assert!(n > 0);
+                    if in_buf[n - 1] == b'\r' {
+                        cr_offset = CrOffset::EndOfPreviousBuffer;
+                        writer.write_all(&in_buf[start_offset..n - 1])?;
+                    } else {
+                        cr_offset = CrOffset::None;
+                        writer.write_all(&in_buf[start_offset..n])?;
+                    }
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
