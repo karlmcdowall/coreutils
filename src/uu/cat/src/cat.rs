@@ -545,22 +545,25 @@ fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
                 if !SHOW_TABS && SHOW_ENDS {
                     let mut start_offset = 0;
                     for offset in memchr2_iter(b'\n', b'\r', &in_buf[..n]) {
-                        if in_buf[offset] == b'\n' {
-                            let lf_offset = offset;
-                            if cr_offset.cr_lf_detected(lf_offset) {
-                                if lf_offset != 0 {
-                                    writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
+                        match in_buf[offset] {
+                            b'\n' => {
+                                let lf_offset = offset;
+                                if cr_offset.cr_lf_detected(lf_offset) {
+                                    if lf_offset != 0 {
+                                        writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
+                                    }
+                                    writer.write_all(b"^M$\n")?;
+                                } else {
+                                    // We have \n
+                                    writer.write_all(&in_buf[start_offset..lf_offset])?;
+                                    writer.write_all(b"$\n")?;
                                 }
-                                writer.write_all(b"^M$\n")?;
-                            } else {
-                                // We have \n
-                                writer.write_all(&in_buf[start_offset..lf_offset])?;
-                                writer.write_all(b"$\n")?;
+                                start_offset = lf_offset + 1;
                             }
-                            start_offset = lf_offset + 1;
-                        } else {
-                            assert_eq!(in_buf[offset], b'\r');
-                            cr_offset = CrOffset::Some(offset);
+                            b'\r' => {
+                                cr_offset = CrOffset::Some(offset);
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     // Reached the end of the buffer. Check if the last character is \r and handle appropriately.
@@ -576,26 +579,30 @@ fn write_chunks<R: FdReadable, const SHOW_TABS: bool, const SHOW_ENDS: bool>(
                 if SHOW_TABS && SHOW_ENDS {
                     let mut start_offset = 0;
                     for offset in memchr3_iter(b'\n', b'\r', b'\t', &in_buf[..n]) {
-                        if in_buf[offset] == b'\t' {
-                            writer.write_all(&in_buf[start_offset..offset])?;
-                            writer.write_all(b"^I")?;
-                            start_offset = offset + 1;
-                        } else if in_buf[offset] == b'\n' {
-                            let lf_offset = offset;
-                            if cr_offset.cr_lf_detected(lf_offset) {
-                                if lf_offset != 0 {
-                                    writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
-                                }
-                                writer.write_all(b"^M$\n")?;
-                            } else {
-                                // We have \n
-                                writer.write_all(&in_buf[start_offset..lf_offset])?;
-                                writer.write_all(b"$\n")?;
+                        match in_buf[offset] {
+                            b'\t' => {
+                                writer.write_all(&in_buf[start_offset..offset])?;
+                                writer.write_all(b"^I")?;
+                                start_offset = offset + 1;
                             }
-                            start_offset = lf_offset + 1;
-                        } else {
-                            assert_eq!(in_buf[offset], b'\r');
-                            cr_offset = CrOffset::Some(offset);
+                            b'\n' => {
+                                let lf_offset = offset;
+                                if cr_offset.cr_lf_detected(lf_offset) {
+                                    if lf_offset != 0 {
+                                        writer.write_all(&in_buf[start_offset..lf_offset - 1])?;
+                                    }
+                                    writer.write_all(b"^M$\n")?;
+                                } else {
+                                    // We have \n
+                                    writer.write_all(&in_buf[start_offset..lf_offset])?;
+                                    writer.write_all(b"$\n")?;
+                                }
+                                start_offset = lf_offset + 1;
+                            }
+                            b'\r' => {
+                                cr_offset = CrOffset::Some(offset);
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     // Reached the end of the buffer. Check if the last character is \r and handle appropriately.
@@ -741,7 +748,7 @@ fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -
 // however, write_nonprint_to_end doesn't need to stop at \r because it will always write \r as ^M.
 // Return the number of written symbols
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
-    match memchr2(b'\n', b'\r', &in_buf) {
+    match memchr2(b'\n', b'\r', in_buf) {
         Some(p) => {
             writer.write_all(&in_buf[..p]).unwrap();
             p
@@ -756,7 +763,7 @@ fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
 fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
     let mut count = 0;
     loop {
-        match memchr3(b'\n', b'\t', b'\r', &in_buf) {
+        match memchr3(b'\n', b'\t', b'\r', in_buf) {
             Some(p) => {
                 writer.write_all(&in_buf[..p]).unwrap();
                 if in_buf[p] == b'\t' {
