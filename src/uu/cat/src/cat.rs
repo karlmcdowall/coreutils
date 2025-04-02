@@ -596,7 +596,11 @@ fn write_new_line<W: Write>(
     Ok(())
 }
 
-fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -> std::io::Result<usize> {
+fn write_end<W: Write>(
+    writer: &mut W,
+    in_buf: &[u8],
+    options: &OutputOptions,
+) -> std::io::Result<usize> {
     if options.show_nonprint {
         write_nonprint_to_end(in_buf, writer, options.tab().as_bytes())
     } else if options.show_tabs {
@@ -650,44 +654,44 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> std::io::Res
     }
 }
 
-fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> std::io::Result<usize> {
+fn write_nonprint_to_end<W: Write>(
+    in_buf: &[u8],
+    writer: &mut W,
+    tab: &[u8],
+) -> std::io::Result<usize> {
     let mut count = 0;
     let mut skiped_index = None;
 
     for i in 0..in_buf.len() {
         let byte = in_buf[i];
         if (32..=126).contains(&byte) {
-            if i == in_buf.len() -1 {
+            if i != in_buf.len() - 1 {
+                if skiped_index.is_none() {
+                    skiped_index = Some(i);
+                }
+                continue;
+            } else {
                 // We're on the last byte. Either print just it, or all the skipped buffer...
                 if skiped_index.is_none() {
                     // Just write the byte.
                     writer.write_all(&[byte])?;
-                    count +=1
+                    count += 1
                 } else {
                     let buf = &in_buf[skiped_index.unwrap()..];
                     writer.write_all(buf)?;
                     count += buf.len();
                 }
                 break;
-            } else if skiped_index.is_none() {
-                skiped_index = Some(i);
             }
-            continue;
-
-        }
-        if byte == b'\n' {
-            if let Some(s_i) = skiped_index {
-                let buff = &in_buf[s_i..i];
-                writer.write_all(buff)?;
-                count += buff.len();
-            }
-            break;
         }
         if let Some(s_i) = skiped_index {
             let buff = &in_buf[s_i..i];
             writer.write_all(buff)?;
             count += buff.len();
             skiped_index = None;
+        }
+        if byte == b'\n' {
+            break;
         }
         assert!(skiped_index.is_none());
         match byte {
