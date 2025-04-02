@@ -533,7 +533,7 @@ fn write_lines<R: FdReadable>(
             }
 
             // print to end of line or end of buffer
-            let offset = write_end(&mut writer, &in_buf[pos..], options);
+            let offset = write_end(&mut writer, &in_buf[pos..], options)?;
 
             // end of buffer?
             if offset + pos == in_buf.len() {
@@ -596,7 +596,7 @@ fn write_new_line<W: Write>(
     Ok(())
 }
 
-fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -> usize {
+fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -> std::io::Result<usize> {
     if options.show_nonprint {
         write_nonprint_to_end(in_buf, writer, options.tab().as_bytes())
     } else if options.show_tabs {
@@ -611,20 +611,20 @@ fn write_end<W: Write>(writer: &mut W, in_buf: &[u8], options: &OutputOptions) -
 // We need to stop at \r because it may be written as ^M depending on the byte after and settings;
 // however, write_nonprint_to_end doesn't need to stop at \r because it will always write \r as ^M.
 // Return the number of written symbols
-fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
+fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> std::io::Result<usize> {
     match in_buf.iter().position(|c| *c == b'\n' || *c == b'\r') {
         Some(p) => {
-            writer.write_all(&in_buf[..p]).unwrap();
-            p
+            writer.write_all(&in_buf[..p])?;
+            Ok(p)
         }
         None => {
-            writer.write_all(in_buf).unwrap();
-            in_buf.len()
+            writer.write_all(in_buf)?;
+            Ok(in_buf.len())
         }
     }
 }
 
-fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
+fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> std::io::Result<usize> {
     let mut count = 0;
     loop {
         match in_buf
@@ -632,25 +632,25 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
             .position(|c| *c == b'\n' || *c == b'\t' || *c == b'\r')
         {
             Some(p) => {
-                writer.write_all(&in_buf[..p]).unwrap();
+                writer.write_all(&in_buf[..p])?;
                 if in_buf[p] == b'\t' {
-                    writer.write_all(b"^I").unwrap();
+                    writer.write_all(b"^I")?;
                     in_buf = &in_buf[p + 1..];
                     count += p + 1;
                 } else {
                     // b'\n' or b'\r'
-                    return count + p;
+                    return Ok(count + p);
                 }
             }
             None => {
-                writer.write_all(in_buf).unwrap();
-                return in_buf.len();
+                writer.write_all(in_buf)?;
+                return Ok(in_buf.len());
             }
         };
     }
 }
 
-fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> usize {
+fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> std::io::Result<usize> {
     let mut count = 0;
     let mut skiped_index = None;
 
@@ -659,7 +659,7 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
         if byte == b'\n' {
             if let Some(s_i) = skiped_index {
                 let buff = &in_buf[s_i..i];
-                writer.write_all(buff).unwrap();
+                writer.write_all(buff)?;
                 count += buff.len();
             }
             break;
@@ -669,11 +669,11 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
                 // We're on the last byte. Either print just it, or all the skipped buffer...
                 if skiped_index.is_none() {
                     // Just write the byte.
-                    writer.write_all(&[byte]).unwrap();
+                    writer.write_all(&[byte])?;
                     count +=1
                 } else {
                     let buf = &in_buf[skiped_index.unwrap()..];
-                    writer.write_all(buf).unwrap();
+                    writer.write_all(buf)?;
                     count += buf.len();
                 }
                 break;
@@ -685,7 +685,7 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
         }
         if let Some(s_i) = skiped_index {
             let buff = &in_buf[s_i..i];
-            writer.write_all(buff).unwrap();
+            writer.write_all(buff)?;
             count += buff.len();
             skiped_index = None;
         }
@@ -698,11 +698,10 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
             128..=159 => writer.write_all(&[b'M', b'-', b'^', byte - 64]),
             160..=254 => writer.write_all(&[b'M', b'-', byte - 128]),
             _ => writer.write_all(b"M-^?"),
-        }
-        .unwrap();
+        }?;
         count += 1;
     }
-    count
+    Ok(count)
 }
 
 fn write_end_of_line<W: Write>(
