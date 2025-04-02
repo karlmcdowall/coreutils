@@ -652,15 +652,48 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
 
 fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> usize {
     let mut count = 0;
+    let mut skiped_index = None;
 
-    for byte in in_buf.iter().copied() {
+    for i in 0..in_buf.len() {
+        let byte = in_buf[i];
         if byte == b'\n' {
+            if let Some(s_i) = skiped_index {
+                let buff = &in_buf[s_i..i];
+                writer.write_all(buff).unwrap();
+                count += buff.len();
+            }
             break;
         }
+        if (32..=126).contains(&byte) {
+            if i == in_buf.len() -1 {
+                // We're on the last byte. Either print just it, or all the skipped buffer...
+                if skiped_index.is_none() {
+                    // Just write the byte.
+                    writer.write_all(&[byte]).unwrap();
+                    count +=1
+                } else {
+                    let buf = &in_buf[skiped_index.unwrap()..];
+                    writer.write_all(buf).unwrap();
+                    count += buf.len();
+                }
+                break;
+            } else if skiped_index.is_none() {
+                skiped_index = Some(i);
+            }
+            continue;
+
+        }
+        if let Some(s_i) = skiped_index {
+            let buff = &in_buf[s_i..i];
+            writer.write_all(buff).unwrap();
+            count += buff.len();
+            skiped_index = None;
+        }
+        assert!(skiped_index.is_none());
         match byte {
             9 => writer.write_all(tab),
             0..=8 | 10..=31 => writer.write_all(&[b'^', byte + 64]),
-            32..=126 => writer.write_all(&[byte]),
+            32..=126 => unreachable!(),
             127 => writer.write_all(b"^?"),
             128..=159 => writer.write_all(&[b'M', b'-', b'^', byte - 64]),
             160..=254 => writer.write_all(&[b'M', b'-', byte - 128]),
