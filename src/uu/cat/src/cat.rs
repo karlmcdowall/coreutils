@@ -656,14 +656,6 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
 
     for i in 0..in_buf.len() {
         let byte = in_buf[i];
-        if byte == b'\n' {
-            if let Some(s_i) = skiped_index {
-                let buff = &in_buf[s_i..i];
-                writer.write_all(buff)?;
-                count += buff.len();
-            }
-            break;
-        }
         if (32..=126).contains(&byte) {
             if i == in_buf.len() -1 {
                 // We're on the last byte. Either print just it, or all the skipped buffer...
@@ -682,6 +674,14 @@ fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) ->
             }
             continue;
 
+        }
+        if byte == b'\n' {
+            if let Some(s_i) = skiped_index {
+                let buff = &in_buf[s_i..i];
+                writer.write_all(buff)?;
+                count += buff.len();
+            }
+            break;
         }
         if let Some(s_i) = skiped_index {
             let buff = &in_buf[s_i..i];
