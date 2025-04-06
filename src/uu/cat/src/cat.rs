@@ -17,7 +17,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 
 use clap::{Arg, ArgAction, Command};
-use memchr::memchr2;
+use memchr::{memchr2, memchr3_iter};
 #[cfg(unix)]
 use nix::fcntl::{FcntlArg, fcntl};
 use thiserror::Error;
@@ -684,31 +684,47 @@ fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
     }
 }
 
-fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> usize {
-    let mut count = 0;
-    loop {
-        match in_buf
-            .iter()
-            .position(|c| *c == b'\n' || *c == b'\t' || *c == b'\r')
-        {
-            Some(p) => {
-                writer.write_all(&in_buf[..p]).unwrap();
-                if in_buf[p] == b'\t' {
-                    writer.write_all(b"^I").unwrap();
-                    in_buf = &in_buf[p + 1..];
-                    count += p + 1;
-                } else {
-                    // b'\n' or b'\r'
-                    return count + p;
-                }
+fn write_tab_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> usize {
+    let mut written_index = 0;
+    for offset in memchr3_iter(b'\n', b'\t', b'\r', &in_buf) {
+        match in_buf[offset] {
+            b'\n' | b'\r' => {
+                writer.write_all(&in_buf[written_index..offset]).unwrap();
+                return offset;
             }
-            None => {
-                writer.write_all(in_buf).unwrap();
-                return in_buf.len() + count;
+            b'\t' => {
+                writer.write_all(&in_buf[..offset]).unwrap();
+                writer.write_all(b"^I").unwrap();
+                written_index = offset+1;
             }
-        };
+            _ => unreachable!(),
+        }
     }
+    writer.write_all(&in_buf[written_index..]).unwrap();
+    return in_buf.len();
 }
+//     let mut count = 0;
+//     loop {
+//         match memchr3(b'\n', b'\t', b'\r', &in_buf)
+//         {
+//             Some(p) => {
+//                 writer.write_all(&in_buf[..p]).unwrap();
+//                 if in_buf[p] == b'\t' {
+//                     writer.write_all(b"^I").unwrap();
+//                     in_buf = &in_buf[p + 1..];
+//                     count += p + 1;
+//                 } else {
+//                     // b'\n' or b'\r'
+//                     return count + p;
+//                 }
+//             }
+//             None => {
+//                 writer.write_all(in_buf).unwrap();
+//                 return in_buf.len() + count;
+//             }
+//         };
+//     }
+// }
 
 fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> usize {
     let mut count = 0;
