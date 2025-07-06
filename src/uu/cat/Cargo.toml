@@ -22,6 +22,7 @@ clap = { workspace = true }
 memchr = { workspace = true }
 thiserror = { workspace = true }
 uucore = { workspace = true, features = ["fast-inc", "fs", "pipes"] }
+patchbay = { path = "../../../../playpen/patchbay"}
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

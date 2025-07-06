@@ -9,7 +9,7 @@ mod platform;
 
 use crate::platform::is_unsafe_overwrite;
 use std::fs::{File, metadata};
-use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::io::{self, BufWriter, IsTerminal, Read, StdoutLock, Write};
 /// Unix domain socket support
 #[cfg(unix)]
 use std::net::Shutdown;
@@ -19,9 +19,11 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 
 use clap::{Arg, ArgAction, Command};
 use memchr::memchr2;
+use patchbay::{FunctionNode, Graph, GraphControl, PushNode, SourceNode, SourceNodePoll};
 use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::UResult;
@@ -37,6 +39,7 @@ mod splice;
 // would be enough for billions of universe lifetimes.
 const LINE_NUMBER_BUF_SIZE: usize = 32;
 
+#[derive(Clone)]
 struct LineNumber {
     buf: [u8; LINE_NUMBER_BUF_SIZE],
     print_start: usize,
@@ -109,13 +112,14 @@ enum CatError {
 
 type CatResult<T> = Result<T, CatError>;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 enum NumberingMode {
     None,
     NonEmpty,
     All,
 }
 
+#[derive(Clone)]
 struct OutputOptions {
     /// Line numbering mode
     number: NumberingMode,
@@ -155,6 +159,7 @@ impl OutputOptions {
 
 /// State that persists between output of each file. This struct is only used
 /// when we can't write fast.
+#[derive(Clone)]
 struct OutputState {
     /// The current line number
     line_number: LineNumber,
@@ -170,12 +175,12 @@ struct OutputState {
 }
 
 #[cfg(unix)]
-trait FdReadable: Read + AsFd {}
+trait FdReadable: Read + AsFd + Send + 'static {}
 #[cfg(not(unix))]
 trait FdReadable: Read {}
 
 #[cfg(unix)]
-impl<T> FdReadable for T where T: Read + AsFd {}
+impl<T> FdReadable for T where T: Read + AsFd + Send + 'static {}
 #[cfg(not(unix))]
 impl<T> FdReadable for T where T: Read {}
 
@@ -356,7 +361,7 @@ pub fn uu_app() -> Command {
 }
 
 fn cat_handle<R: FdReadable>(
-    handle: &mut InputHandle<R>,
+    handle: InputHandle<R>,
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
@@ -374,33 +379,33 @@ fn cat_path(path: &str, options: &OutputOptions, state: &mut OutputState) -> Cat
             if is_unsafe_overwrite(&stdin, &io::stdout()) {
                 return Err(CatError::OutputIsInput);
             }
-            let mut handle = InputHandle {
+            let handle = InputHandle {
                 reader: stdin,
                 is_interactive: io::stdin().is_terminal(),
             };
-            cat_handle(&mut handle, options, state)
+            cat_handle(handle, options, state)
         }
         InputType::Directory => Err(CatError::IsDirectory),
         #[cfg(unix)]
         InputType::Socket => {
             let socket = UnixStream::connect(path)?;
             socket.shutdown(Shutdown::Write)?;
-            let mut handle = InputHandle {
+            let handle = InputHandle {
                 reader: socket,
                 is_interactive: false,
             };
-            cat_handle(&mut handle, options, state)
+            cat_handle(handle, options, state)
         }
         _ => {
             let file = File::open(path)?;
             if is_unsafe_overwrite(&file, &io::stdout()) {
                 return Err(CatError::OutputIsInput);
             }
-            let mut handle = InputHandle {
+            let handle = InputHandle {
                 reader: file,
                 is_interactive: false,
             };
-            cat_handle(&mut handle, options, state)
+            cat_handle(handle, options, state)
         }
     }
 }
@@ -482,14 +487,14 @@ fn get_input_type(path: &str) -> CatResult<InputType> {
 
 /// Writes handle to stdout with no configuration. This allows a
 /// simple memory copy.
-fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
+fn write_fast<R: FdReadable>(mut handle: InputHandle<R>) -> CatResult<()> {
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // If we're on Linux or Android, try to use the splice() system call
         // for faster writing. If it works, we're done.
-        if !splice::write_fast_using_splice(handle, &stdout_lock)? {
+        if !splice::write_fast_using_splice(&mut handle, &stdout_lock)? {
             return Ok(());
         }
     }
@@ -517,77 +522,229 @@ fn write_fast<R: FdReadable>(handle: &mut InputHandle<R>) -> CatResult<()> {
     Ok(())
 }
 
+struct FileReader {
+    source: Arc<SourceNode>,
+    output: Arc<PushNode<Vec<u8>>>,
+}
+
+impl FileReader {
+    fn new<R: FdReadable>(graph: &Arc<Graph<CatError>>, mut handle: InputHandle<R>) -> Self {
+        let output = graph.new_push_node::<Vec<u8>>();
+        // Could potentially drop the Ctx struct here?
+        struct Ctx<S: FdReadable> {
+            handle: InputHandle<S>,
+        }
+        let ctx = Ctx { handle };
+        let output_handle = output.clone();
+        let mut source: Option<Arc<SourceNode>> = None;
+        graph
+            .new_node_builder(ctx)
+            .add_source_node::<_, CatError>(&mut source, move |ctx| {
+                // Allocate our output buffer. Will repleace once we have object pools.
+                let mut output_buffer = vec![0; 1024 * 31];
+                let read_bytes = ctx.handle.reader.read(&mut output_buffer)?;
+                if read_bytes == 0 {
+                    return Ok(SourceNodePoll::Stop);
+                }
+                output_buffer.truncate(read_bytes);
+                output_handle.push_msg(Arc::new(output_buffer));
+                Ok(SourceNodePoll::AgainImmediate)
+            })
+            .build();
+        Self {
+            output,
+            source: source.unwrap(),
+        }
+    }
+
+    fn output_node(&self) -> &Arc<PushNode<Vec<u8>>> {
+        &self.output
+    }
+}
+
+struct FileWriter<'a> {
+    node: Arc<FunctionNode<Vec<u8>>>,
+    val_ref: &'a usize,
+}
+
+impl<'a> FileWriter<'a> {
+    fn new(
+        graph: &Arc<Graph<CatError>>,
+        options: &OutputOptions,
+        state: &OutputState,
+        val: &'a usize,
+    ) -> Self {
+        struct Ctx {
+            writer: BufWriter<StdoutLock<'static>>,
+            state: OutputState,
+            options: OutputOptions,
+        }
+        let mut node: Option<Arc<FunctionNode<Vec<u8>>>> = None;
+        let state_copy = state.clone();
+        let options_copy = options.clone();
+        graph
+            .new_node_builder_with_delayed_context_construction(move || {
+                let stdout = io::stdout();
+                let mut stdout_lock = stdout.lock();
+                let mut writer = BufWriter::with_capacity(32 * 1024, stdout_lock);
+                Ctx { writer,
+                state: state_copy,
+                options: options_copy,}
+            })
+            .add_function_node(&mut node, move |ctx: &mut Ctx, msg: Arc<Vec<u8>>| {
+                // Just write the msg to stdout
+                //ctx.stdout.write_all(msg.as_slice())
+
+                let in_buf = msg.as_slice();
+                let n = msg.len();
+                let mut pos = 0;
+                while pos < n {
+                    // skip empty line_number enumerating them if needed
+                    if in_buf[pos] == b'\n' {
+                        write_new_line(&mut ctx.writer, &ctx.options, &mut ctx.state, false)?;
+                        ctx.state.at_line_start = true;
+                        pos += 1;
+                        continue;
+                    }
+                    if ctx.state.skipped_carriage_return {
+                        ctx.writer.write_all(b"\r")?;
+                        ctx.state.skipped_carriage_return = false;
+                        ctx.state.at_line_start = false;
+                    }
+                    ctx.state.one_blank_kept = false;
+                    if ctx.state.at_line_start && ctx.options.number != NumberingMode::None {
+                        ctx.state.line_number.write(&mut ctx.writer)?;
+                        ctx.state.line_number.increment();
+                    }
+
+                    // print to end of line or end of buffer
+                    let offset = write_end(&mut ctx.writer, &in_buf[pos..], &ctx.options);
+
+                    // end of buffer?
+                    if offset + pos == in_buf.len() {
+                        ctx.state.at_line_start = false;
+                        break;
+                    }
+                    if in_buf[pos + offset] == b'\r' {
+                        ctx.state.skipped_carriage_return = true;
+                    } else {
+                        assert_eq!(in_buf[pos + offset], b'\n');
+                        // print suitable end of line
+                        write_end_of_line(
+                            &mut ctx.writer,
+                            ctx.options.end_of_line().as_bytes(),
+                            false,
+                        )?;
+                        ctx.state.at_line_start = true;
+                    }
+                    pos += offset + 1;
+                }
+                // We need to flush the buffer each time around the loop in order to pass GNU tests.
+                // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+                // of this loop will block (indefinitely) whist waiting for more data. The expectation
+                // however is that anything that's ready for output should show up in the meantime,
+                // and not be buffered internally to the `cat` process.
+                // Hence it's necessary to flush our buffer before every time we could potentially block
+                // on a `std::io::Read::read` call.
+                ctx.writer.flush()?;
+
+                Result::<(), CatError>::Ok(())
+            })
+            .build();
+
+        Self {
+            node: node.unwrap(),
+            val_ref: val,
+        }
+    }
+
+    fn input_node(&self) -> &Arc<FunctionNode<Vec<u8>>> {
+        &self.node
+    }
+}
+
 /// Outputs file contents to stdout in a line-by-line fashion,
 /// propagating any errors that might occur.
 fn write_lines<R: FdReadable>(
-    handle: &mut InputHandle<R>,
+    mut handle: InputHandle<R>,
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
-    let mut in_buf = [0; 1024 * 31];
-    let stdout = io::stdout();
-    let stdout = stdout.lock();
-    // Add a 32K buffer for stdout - this greatly improves performance.
-    let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
-
-    while let Ok(n) = handle.reader.read(&mut in_buf) {
-        if n == 0 {
-            break;
-        }
-        let in_buf = &in_buf[..n];
-        let mut pos = 0;
-        while pos < n {
-            // skip empty line_number enumerating them if needed
-            if in_buf[pos] == b'\n' {
-                write_new_line(&mut writer, options, state, handle.is_interactive)?;
-                state.at_line_start = true;
-                pos += 1;
-                continue;
-            }
-            if state.skipped_carriage_return {
-                writer.write_all(b"\r")?;
-                state.skipped_carriage_return = false;
-                state.at_line_start = false;
-            }
-            state.one_blank_kept = false;
-            if state.at_line_start && options.number != NumberingMode::None {
-                state.line_number.write(&mut writer)?;
-                state.line_number.increment();
-            }
-
-            // print to end of line or end of buffer
-            let offset = write_end(&mut writer, &in_buf[pos..], options);
-
-            // end of buffer?
-            if offset + pos == in_buf.len() {
-                state.at_line_start = false;
-                break;
-            }
-            if in_buf[pos + offset] == b'\r' {
-                state.skipped_carriage_return = true;
-            } else {
-                assert_eq!(in_buf[pos + offset], b'\n');
-                // print suitable end of line
-                write_end_of_line(
-                    &mut writer,
-                    options.end_of_line().as_bytes(),
-                    handle.is_interactive,
-                )?;
-                state.at_line_start = true;
-            }
-            pos += offset + 1;
-        }
-        // We need to flush the buffer each time around the loop in order to pass GNU tests.
-        // When we are reading the input from a pipe, the `handle.reader.read` call at the top
-        // of this loop will block (indefinitely) whist waiting for more data. The expectation
-        // however is that anything that's ready for output should show up in the meantime,
-        // and not be buffered internally to the `cat` process.
-        // Hence it's necessary to flush our buffer before every time we could potentially block
-        // on a `std::io::Read::read` call.
-        writer.flush()?;
-    }
-
+    let mut graph_control = GraphControl::<CatError>::new();
+    let graph = graph_control.graph();
+    let file_reader = FileReader::new(&graph, handle);
+    let num: usize = 5;
+    let file_writer = FileWriter::new(&graph, options, state, &num);
+    graph.add_static_edge(
+        file_reader.output_node().clone(),
+        file_writer.input_node().clone(),
+    );
+    graph_control.run_to_result()?;
     Ok(())
+    // let mut in_buf = [0; 1024 * 31];
+    // let stdout = io::stdout();
+    // let stdout = stdout.lock();
+    // // Add a 32K buffer for stdout - this greatly improves performance.
+    // let mut writer = BufWriter::with_capacity(32 * 1024, stdout);
+
+    // while let Ok(n) = handle.reader.read(&mut in_buf) {
+    //     if n == 0 {
+    //         break;
+    //     }
+    //     let in_buf = &in_buf[..n];
+    //     let mut pos = 0;
+    //     while pos < n {
+    //         // skip empty line_number enumerating them if needed
+    //         if in_buf[pos] == b'\n' {
+    //             write_new_line(&mut writer, options, state, handle.is_interactive)?;
+    //             state.at_line_start = true;
+    //             pos += 1;
+    //             continue;
+    //         }
+    //         if state.skipped_carriage_return {
+    //             writer.write_all(b"\r")?;
+    //             state.skipped_carriage_return = false;
+    //             state.at_line_start = false;
+    //         }
+    //         state.one_blank_kept = false;
+    //         if state.at_line_start && options.number != NumberingMode::None {
+    //             state.line_number.write(&mut writer)?;
+    //             state.line_number.increment();
+    //         }
+
+    //         // print to end of line or end of buffer
+    //         let offset = write_end(&mut writer, &in_buf[pos..], options);
+
+    //         // end of buffer?
+    //         if offset + pos == in_buf.len() {
+    //             state.at_line_start = false;
+    //             break;
+    //         }
+    //         if in_buf[pos + offset] == b'\r' {
+    //             state.skipped_carriage_return = true;
+    //         } else {
+    //             assert_eq!(in_buf[pos + offset], b'\n');
+    //             // print suitable end of line
+    //             write_end_of_line(
+    //                 &mut writer,
+    //                 options.end_of_line().as_bytes(),
+    //                 handle.is_interactive,
+    //             )?;
+    //             state.at_line_start = true;
+    //         }
+    //         pos += offset + 1;
+    //     }
+    //     // We need to flush the buffer each time around the loop in order to pass GNU tests.
+    //     // When we are reading the input from a pipe, the `handle.reader.read` call at the top
+    //     // of this loop will block (indefinitely) whist waiting for more data. The expectation
+    //     // however is that anything that's ready for output should show up in the meantime,
+    //     // and not be buffered internally to the `cat` process.
+    //     // Hence it's necessary to flush our buffer before every time we could potentially block
+    //     // on a `std::io::Read::read` call.
+    //     writer.flush()?;
+    // }
+
+    // Ok(())
 }
 
 // \r followed by \n is printed as ^M when show_ends is enabled, so that \r\n prints as ^M$

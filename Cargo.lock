@@ -1954,6 +1954,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "patchbay"
+version = "0.1.0"
+
+[[package]]
 name = "phf"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2947,6 +2951,7 @@ dependencies = [
  "clap",
  "memchr",
  "nix",
+ "patchbay",
  "tempfile",
  "thiserror 2.0.12",
  "uucore",
