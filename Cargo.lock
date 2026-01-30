@@ -1954,7 +1954,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "patchbay"
+name = "patchbay4"
 version = "0.1.0"
 
 [[package]]
@@ -2951,7 +2951,7 @@ dependencies = [
  "clap",
  "memchr",
  "nix",
- "patchbay",
+ "patchbay4",
  "tempfile",
  "thiserror 2.0.12",
  "uucore",

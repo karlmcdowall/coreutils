@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use clap::{Arg, ArgAction, Command};
 use memchr::memchr2;
-use patchbay::{FunctionNode, Graph, GraphControl, PushNode, SourceNode, SourceNodePoll};
+use patchbay4::{FunctionNode, GraphHandle, GraphLiteAPI, GraphExecControl, PushNode, SourceNode,SourceNodePoll};
 use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::UResult;
@@ -528,8 +528,8 @@ struct FileReader {
 }
 
 impl FileReader {
-    fn new<R: FdReadable>(graph: &Arc<Graph<CatError>>, mut handle: InputHandle<R>) -> Self {
-        let output = graph.new_push_node::<Vec<u8>>();
+    fn new<R: FdReadable>(graph: &GraphHandle<CatError>, mut handle: InputHandle<R>) -> Self {
+        let output = graph.new_push_node::<Vec<u8>>("FileReader::output");
         // Could potentially drop the Ctx struct here?
         struct Ctx<S: FdReadable> {
             handle: InputHandle<S>,
@@ -539,7 +539,7 @@ impl FileReader {
         let mut source: Option<Arc<SourceNode>> = None;
         graph
             .new_node_builder(ctx)
-            .add_source_node::<_, CatError>(&mut source, move |ctx| {
+            .add_source_node("source", &mut source, move |ctx| {
                 // Allocate our output buffer. Will repleace once we have object pools.
                 let mut output_buffer = vec![0; 1024 * 31];
                 let read_bytes = ctx.handle.reader.read(&mut output_buffer)?;
@@ -548,7 +548,7 @@ impl FileReader {
                 }
                 output_buffer.truncate(read_bytes);
                 output_handle.push_msg(Arc::new(output_buffer));
-                Ok(SourceNodePoll::AgainImmediate)
+                Ok(SourceNodePoll::Continue)
             })
             .build();
         Self {
@@ -569,7 +569,7 @@ struct FileWriter<'a> {
 
 impl<'a> FileWriter<'a> {
     fn new(
-        graph: &Arc<Graph<CatError>>,
+        graph: &GraphHandle<CatError>,
         options: &OutputOptions,
         state: &OutputState,
         val: &'a usize,
@@ -583,7 +583,7 @@ impl<'a> FileWriter<'a> {
         let state_copy = state.clone();
         let options_copy = options.clone();
         graph
-            .new_node_builder_with_delayed_context_construction(move || {
+            .new_node_builder_with_delayed_construction(move || {
                 let stdout = io::stdout();
                 let mut stdout_lock = stdout.lock();
                 let mut writer = BufWriter::with_capacity(32 * 1024, stdout_lock);
@@ -591,7 +591,7 @@ impl<'a> FileWriter<'a> {
                 state: state_copy,
                 options: options_copy,}
             })
-            .add_function_node(&mut node, move |ctx: &mut Ctx, msg: Arc<Vec<u8>>| {
+           .add_function_node("node", &mut node, move |ctx: &mut Ctx, msg: Arc<Vec<u8>>| {
                 // Just write the msg to stdout
                 //ctx.stdout.write_all(msg.as_slice())
 
@@ -670,17 +670,17 @@ fn write_lines<R: FdReadable>(
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
-    let mut graph_control = GraphControl::<CatError>::new();
+    let mut graph_control = GraphExecControl::<CatError>::new();
     let graph = graph_control.graph();
-    let file_reader = FileReader::new(&graph, handle);
+    let file_reader = FileReader::new(graph, handle);
     let num: usize = 5;
-    let file_writer = FileWriter::new(&graph, options, state, &num);
+    let file_writer = FileWriter::new(graph, options, state, &num);
     graph.add_static_edge(
         file_reader.output_node().clone(),
         file_writer.input_node().clone(),
     );
-    graph_control.run_to_result()?;
-    Ok(())
+    let result = graph_control.run_to_result();
+    result.map_err(|mut err| {err.pop().unwrap()})
     // let mut in_buf = [0; 1024 * 31];
     // let stdout = io::stdout();
     // let stdout = stdout.lock();
