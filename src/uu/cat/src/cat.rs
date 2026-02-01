@@ -23,7 +23,8 @@ use std::sync::Arc;
 
 use clap::{Arg, ArgAction, Command};
 use memchr::memchr2;
-use patchbay4::{FunctionNode, GraphHandle, GraphLiteAPI, GraphExecControl, PushNode, SourceNode,SourceNodePoll};
+use patchbay4::{FunctionNode, GraphHandle, GraphLiteAPI, GraphExecControl, PushNode, SourceNode,SourceNodePoll,
+message_pool::MessagePool, message_pool::MessagePoolMessage};
 use thiserror::Error;
 use uucore::display::Quotable;
 use uucore::error::UResult;
@@ -524,30 +525,34 @@ fn write_fast<R: FdReadable>(mut handle: InputHandle<R>) -> CatResult<()> {
 
 struct FileReader {
     source: Arc<SourceNode>,
-    output: Arc<PushNode<Vec<u8>>>,
+    output: Arc<PushNode<MessagePoolMessage<Vec<u8>>>>,
 }
 
 impl FileReader {
-    fn new<R: FdReadable>(graph: &GraphHandle<CatError>, mut handle: InputHandle<R>) -> Self {
-        let output = graph.new_push_node::<Vec<u8>>("FileReader::output");
+    fn new<R: FdReadable>(graph: &GraphHandle<CatError>, mut handle: InputHandle<R>, message_pool: &Arc<MessagePool<Vec<u8>>>) -> Self {
+        let output = graph.new_push_node::<MessagePoolMessage<Vec<u8>>>("FileReader::output");
         // Could potentially drop the Ctx struct here?
         struct Ctx<S: FdReadable> {
             handle: InputHandle<S>,
         }
         let ctx = Ctx { handle };
         let output_handle = output.clone();
+        let message_pool_clone = message_pool.clone();
         let mut source: Option<Arc<SourceNode>> = None;
         graph
             .new_node_builder(ctx)
             .add_source_node("source", &mut source, move |ctx| {
                 // Allocate our output buffer. Will repleace once we have object pools.
-                let mut output_buffer = vec![0; 1024 * 31];
+                //let mut output_buffer = vec![0; 1024 * 31];
+                let mut output_buffer = message_pool_clone.get_or_wait();
+                output_buffer.resize(1024*31, 0);
+
                 let read_bytes = ctx.handle.reader.read(&mut output_buffer)?;
                 if read_bytes == 0 {
                     return Ok(SourceNodePoll::Stop);
                 }
                 output_buffer.truncate(read_bytes);
-                output_handle.push_msg(Arc::new(output_buffer));
+                output_handle.push_msg(output_buffer.into_shareable());
                 Ok(SourceNodePoll::Continue)
             })
             .build();
@@ -557,13 +562,13 @@ impl FileReader {
         }
     }
 
-    fn output_node(&self) -> &Arc<PushNode<Vec<u8>>> {
+    fn output_node(&self) -> &Arc<PushNode<MessagePoolMessage<Vec<u8>>>> {
         &self.output
     }
 }
 
 struct FileWriter<'a> {
-    node: Arc<FunctionNode<Vec<u8>>>,
+    node: Arc<FunctionNode<MessagePoolMessage<Vec<u8>>>>,
     val_ref: &'a usize,
 }
 
@@ -579,7 +584,7 @@ impl<'a> FileWriter<'a> {
             state: OutputState,
             options: OutputOptions,
         }
-        let mut node: Option<Arc<FunctionNode<Vec<u8>>>> = None;
+        let mut node: Option<Arc<FunctionNode<MessagePoolMessage<Vec<u8>>>>> = None;
         let state_copy = state.clone();
         let options_copy = options.clone();
         graph
@@ -591,7 +596,7 @@ impl<'a> FileWriter<'a> {
                 state: state_copy,
                 options: options_copy,}
             })
-           .add_function_node("node", &mut node, move |ctx: &mut Ctx, msg: Arc<Vec<u8>>| {
+           .add_function_node("node", &mut node, move |ctx: &mut Ctx, msg: Arc<MessagePoolMessage<Vec<u8>>>| {
                 // Just write the msg to stdout
                 //ctx.stdout.write_all(msg.as_slice())
 
@@ -658,7 +663,7 @@ impl<'a> FileWriter<'a> {
         }
     }
 
-    fn input_node(&self) -> &Arc<FunctionNode<Vec<u8>>> {
+    fn input_node(&self) -> &Arc<FunctionNode<MessagePoolMessage<Vec<u8>>>> {
         &self.node
     }
 }
@@ -670,9 +675,10 @@ fn write_lines<R: FdReadable>(
     options: &OutputOptions,
     state: &mut OutputState,
 ) -> CatResult<()> {
+    let message_pool = MessagePool::<Vec<u8>>::new(10, |vec| {vec.clear();});
     let mut graph_control = GraphExecControl::<CatError>::new();
     let graph = graph_control.graph();
-    let file_reader = FileReader::new(graph, handle);
+    let file_reader = FileReader::new(graph, handle, &message_pool);
     let num: usize = 5;
     let file_writer = FileWriter::new(graph, options, state, &num);
     graph.add_static_edge(
